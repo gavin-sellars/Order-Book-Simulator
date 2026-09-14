@@ -98,6 +98,15 @@ tasks.register<JavaExec>("itchSession") {
     args(splitArgs("itchArgs"))
 }
 
+tasks.register<JavaExec>("latencySweep") {
+    group = "application"
+    description = "Runs the sample market maker at several latencies and writes P&L CSVs. -PsweepArgs=\"[seed] [minutes]\"."
+    classpath = sourceSets["main"].runtimeClasspath
+    mainClass = "obs.app.LatencySweepMain"
+    jvmArgs("-Xms2g", "-Xmx2g", "-XX:+AlwaysPreTouch")
+    args(splitArgs("sweepArgs"))
+}
+
 tasks.register<JavaExec>("epsilonSmoke") {
     group = "benchmark"
     description = "Replays the benchmark tape under Epsilon GC, which never frees memory: any hot-path allocation kills the run."

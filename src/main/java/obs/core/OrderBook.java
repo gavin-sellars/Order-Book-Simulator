@@ -419,6 +419,26 @@ public final class OrderBook implements Book {
         return slot == LongIntMap.NOT_FOUND ? -1 : pool.seq[slot];
     }
 
+    /**
+     * The arrival sequence number the next resting order will get. Every order already in the
+     * book has a lower number, so comparing against this tells "ahead of" from "behind" a point in time.
+     */
+    public long nextArrivalSeq() {
+        return nextArrivalSeq;
+    }
+
+    /** Price of a resting order, or -1 if it isn't in the book. */
+    public long priceOf(long id) {
+        int slot = idToSlot.get(id);
+        return slot == LongIntMap.NOT_FOUND ? -1 : toPrice(pool.levelIdx[slot]);
+    }
+
+    /** Side of a resting order, or -1 if it isn't in the book. */
+    public byte sideOf(long id) {
+        int slot = idToSlot.get(id);
+        return slot == LongIntMap.NOT_FOUND ? -1 : pool.side[slot];
+    }
+
     public long minPrice() {
         return basePrice;
     }

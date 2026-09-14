@@ -9,6 +9,8 @@ public final class OrderResult {
     public static final int REJECTED_PRICE = 3;
     public static final int REJECTED_DUP_ID = 4;
     public static final int REJECTED_UNKNOWN_ID = 5;
+    /** Used by the simulator for orders that reach the exchange outside market hours. */
+    public static final int REJECTED_MARKET_CLOSED = 6;
 
     private OrderResult() {}
 
@@ -20,6 +22,7 @@ public final class OrderResult {
             case REJECTED_PRICE -> "REJECTED_PRICE";
             case REJECTED_DUP_ID -> "REJECTED_DUP_ID";
             case REJECTED_UNKNOWN_ID -> "REJECTED_UNKNOWN_ID";
+            case REJECTED_MARKET_CLOSED -> "REJECTED_MARKET_CLOSED";
             default -> "UNKNOWN(" + result + ")";
         };
     }

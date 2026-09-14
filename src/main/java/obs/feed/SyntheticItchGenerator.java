@@ -101,6 +101,8 @@ public final class SyntheticItchGenerator {
     private long matchNumber;
     private long lastTradePrice;
     private long lastTimestamp;
+    private double fairValue;               // hidden "true" price, in price units
+    private double lastEventSeconds;
 
     private long events, addMessages, executionMessages, cancelMessages, deleteMessages, replaceMessages;
     private long sharesTraded, skippedEvents;
@@ -113,6 +115,7 @@ public final class SyntheticItchGenerator {
         this.arrivals = new HawkesProcess(config.baseRates(), config.excitation(), config.decay(), config.seed());
         this.random = new SplittableRandom(config.seed() ^ 0x9E37_79B9_7F4A_7C15L);
         this.lastTradePrice = config.startPrice();
+        this.fairValue = config.startPrice();
     }
 
     /** Writes a whole session and flushes the writer. The caller closes it. */
@@ -137,6 +140,7 @@ public final class SyntheticItchGenerator {
 
             long timestamp = Math.max(lastTimestamp, open + offset);
             lastTimestamp = timestamp;
+            moveFairValue(arrivals.time());
             events++;
             handle(stream, timestamp);
             observer.afterEvent(orderMessages(), book);
@@ -188,6 +192,13 @@ public final class SyntheticItchGenerator {
 
     private void addMarketable(long ts) {
         byte side = randomSide();
+        long bid = book.bestBid();
+        long ask = book.bestAsk();
+        if (bid != Book.NO_BID && ask != Book.NO_ASK && random.nextDouble() < config.informedProbability()) {
+            double mid = (bid + ask) / 2.0;
+            if (fairValue > mid) side = Side.BUY;
+            else if (fairValue < mid) side = Side.SELL;
+        }
         long opposite = side == Side.BUY ? book.bestAsk() : book.bestBid();
         if (opposite == Book.NO_ASK || opposite == Book.NO_BID) {
             addPassive(ts);                             // nothing to trade against yet
@@ -311,9 +322,24 @@ public final class SyntheticItchGenerator {
             }
         }
 
+        // Nobody rests on the wrong side of the fair value: bids at or below it, asks at or above it.
+        if (side == Side.BUY) price = Math.min(price, Math.floorDiv((long) Math.floor(fairValue), tick) * tick);
+        else price = Math.max(price, Math.ceilDiv((long) Math.ceil(fairValue), tick) * tick);
+
         if (side == Side.BUY && haveAsk && price >= ask) price = ask - tick;
         if (side == Side.SELL && haveBid && price <= bid) price = bid + tick;
         return inRange(price) ? price : -1;
+    }
+
+    /** Random walk: over dt seconds the fair value moves by a normal amount with standard deviation volatility × √dt. */
+    private void moveFairValue(double nowSeconds) {
+        double dt = nowSeconds - lastEventSeconds;
+        lastEventSeconds = nowSeconds;
+        if (config.fairValueVolatility() == 0 || dt <= 0) return;
+
+        fairValue += config.fairValueVolatility() * Math.sqrt(dt) * random.nextGaussian();
+        double margin = 50.0 * config.tickSize();         // keep prices well inside the ladder
+        fairValue = Math.clamp(fairValue, config.minPrice() + margin, config.maxPrice() - margin);
     }
 
     private int ticksAway() {

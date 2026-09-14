@@ -147,18 +147,56 @@ Without mixing, lookups get 2–3× faster, but removal becomes catastrophic: 10
 
 ## Synthetic ITCH session
 
-Measured after milestone 4, same machine. `gradlew itchSession` generates a full trading day (09:30 to 16:00, seed 20260914, default `FlowConfig`), writes it as ITCH 5.0, then replays the file into the fast book. The file replay runs with `-Xms2g -Xmx2g -XX:+AlwaysPreTouch` and G1; a single run, not a JMH measurement.
+Re-measured in milestone 5, after the generator gained its fair-value random walk; same machine. `gradlew itchSession` generates a full trading day (09:30 to 16:00, seed 20260914, default `FlowConfig`), writes it as ITCH 5.0, then replays the file into the fast book. The file replay runs with `-Xms2g -Xmx2g -XX:+AlwaysPreTouch` and G1; a single run, not a JMH measurement.
 
 | | |
 |---|---|
-| File | 119,393,609 bytes |
-| Messages | 3,979,093: 1,749,678 add, 84,921 execute, 219,649 cancel, 1,706,781 delete, 218,057 replace, 7 session |
-| Flow | 3,941,931 Hawkes events, 13,338,700 shares traded, cancel-to-trade 22.7 : 1 |
-| Generation (reference book matching + ITCH writing) | 2.17 s, **1,837,137 messages/sec** |
-| Replay into the fast book (memory-mapped file, `ItchReader` → `BookBuilder`) | 0.645 s, **6,172,136 messages/sec, 162.0 ns/message** |
-| Check | 0 rejected messages; closing touch 149.99 / 150.00 with 4,997 resting orders, identical to the generator's reference book; structure valid |
+| File | 119,300,866 bytes |
+| Messages | 3,976,273: 1,749,123 add, 81,667 execute, 218,413 cancel, 1,707,765 delete, 219,298 replace, 7 session |
+| Flow | 3,941,931 Hawkes events, 13,275,981 shares traded, cancel-to-trade 23.6 : 1; price opens at $150.00, closes at $146.97 / $146.98 |
+| Generation (reference book matching + ITCH writing) | 1.97 s, **2,017,469 messages/sec** |
+| Replay into the fast book (memory-mapped file, `ItchReader` → `BookBuilder`) | 0.613 s, **6,491,688 messages/sec, 154.0 ns/message** |
+| Check | 0 rejected messages; closing touch 146.97 / 146.98 with 4,998 resting orders, identical to the generator's reference book; structure valid |
 
 The replay figure is lower than the 9.1M messages/sec tape replay above. It includes decoding ITCH from the mapped file, and the session's book holds up to 5,000 resting orders rather than about 1,000. A single end-to-end run like this also includes JIT warm-up.
+
+## Simulation: market maker P&L vs latency
+
+Milestone 5. `gradlew latencySweep` replays the full-day session above six times with `SampleMarketMaker`:
+- quotes 100 shares a side at the touch (one tick inside when the spread is 3+ ticks)
+- has a position limit of 1,000
+- earns a $0.0020/share maker rebate and pays a $0.0030/share taker fee
+
+Latency is the same in both directions, with exponential jitter averaging 10% of it. P&L is marked to the mid at the close. The same session and seed are used for every run.
+
+| One-way latency | P&L $ | Net fees $ | Volume | Fills | Orders | Orders filled | Max \|position\| |
+|---|---|---|---|---|---|---|---|
+| 0 | −3,781.59 | −397.98 | 207,247 | 2,622 | 3,612 | 62.3% | 1,098 |
+| 10 µs | −6,431.85 | −351.33 | 213,661 | 2,656 | 3,887 | 59.3% | 1,099 |
+| 100 µs | −6,439.15 | −353.03 | 213,261 | 2,655 | 3,888 | 59.2% | 1,099 |
+| 1 ms | −6,736.92 | −347.83 | 210,217 | 2,628 | 3,828 | 59.2% | 1,098 |
+| 10 ms | −7,678.18 | −320.73 | 192,000 | 2,442 | 3,509 | 58.2% | 1,099 |
+| 50 ms | −9,350.76 | −231.18 | 148,416 | 1,951 | 2,838 | 53.7% | 1,097 |
+
+Each replay of the 4M-message session with the strategy took 0.7–0.9 s. Negative fees are net rebates earned.
+
+What it shows:
+- **Latency costs money.** P&L falls at every step, from −$3,782 to −$9,351, and fewer orders fill. A slower maker's quotes stay in the book after the fair value has moved, so informed orders pick them off; and it joins queues later.
+- **The maker loses even at zero latency.** Half of marketable orders trade towards the hidden fair value, so fills against this maker are adversely selected. A one-tick spread plus a rebate doesn't cover that. The strategy has no signal and no inventory skew; it only exists to exercise the simulator.
+- **10 µs and 100 µs are almost identical.** Order events in this flow are milliseconds apart, so a 90 µs difference rarely changes which event a message lands after. The biggest step is from 0 to 10 µs: at zero latency the maker reacts before the next event without fail.
+- **The position limit is soft.** It is checked when quoting, so orders already working can fill past it: max 1,099 against 1,000.
+
+Caveats:
+- One synthetic session and one seed.
+- No market impact (see `SimulatedOrders`).
+- No queue priority for our replaced orders.
+- Mark-to-mid at the close.
+
+The dollar amounts depend heavily on the generator's `informedProbability` and fair-value volatility. The direction of the latency effect is the result to rely on, not the size.
+
+A bug found by this sweep: before the fix, a quote that filled while its cancel was in flight left that side waiting for an acknowledgement that could never match. The maker sent only 31–46 orders all day. `SampleMarketMakerTest.anOrderThatFillsWhileItsCancelIsInFlightDoesNotFreezeThatSide` covers it.
+
+Before the generator had a fair value, the same sweep gave $205.10 at every latency: with a price that never moved, latency had nothing to act on.
 
 ## Reproducing
 
@@ -166,6 +204,8 @@ The replay figure is lower than the 9.1M messages/sec tape replay above. It incl
 gradlew test                                                   # includes ZeroAllocationTest
 gradlew epsilonSmoke                                           # 200M messages under Epsilon GC
 gradlew itchSession                                            # full-day synthetic ITCH: generate, replay, check
+gradlew latencySweep                                           # market maker P&L at 0 / 10 us / 100 us / 1 ms / 10 ms / 50 ms
+python tools/plot_pnl.py                                       # charts from the sweep CSVs (needs matplotlib)
 gradlew latency                                                # HdrHistogram tables and coordinated omission demo
 gradlew jmh "-PjmhArgs=-f 1 -wi 3 -i 5 -w 1s -r 1s -prof gc"   # quick JMH suite as run here (~3 min)
 gradlew jmh "-PjmhArgs=-prof gc"                               # full defaults (~15 min)

@@ -142,9 +142,26 @@ Every milestone ends in a working, committed state with passing tests. Rough eff
     - Replaces are always passive, so the "crossing replace" path isn't needed.
     - The 10M-message check is a 4M-message full day, compared on its final state rather than after every event.
   - Known limits:
-    - The price barely moves all day, because the flow is symmetric with no drift or volatility model.
     - Resting orders sit at the 5,000 cap late in the session.
-- [ ] M5: simulation layer
+    - Fixed in M5: the price barely moved all day, because the planned fair-value random walk was missing. The generator now has one, plus informed marketable orders.
+- [x] **M5** (2026-09-14): simulation layer. Results are in `docs/BENCHMARKS.md`.
+  - `obs.sim`: `SimClock` (time + sequence tie-break), `LatencyModel` (base delay + exponential jitter, FIFO per channel), `SimulatedOrders` (L3 queue-position inference via arrival sequence numbers), `Simulation` (ITCH replay driving the clock, strategy and P&L).
+  - `obs.strategy`: `Strategy`, `StrategyContext`, `SampleMarketMaker`.
+  - `obs.metrics`: `PnlTracker` (integer price units, maker rebate / taker fee), `FillStats`.
+  - `OrderBook` gained `nextArrivalSeq`, `priceOf` and `sideOf`.
+  - Generator: `FlowConfig.fairValueVolatility` (default 150 = $0.015/√s) and `informedProbability` (0.5). Passive orders never rest on the wrong side of fair value.
+  - Apps: `LatencySweepMain` (`gradlew latencySweep`, writes CSVs to `build/reports/sim`) and `tools/plot_pnl.py`.
+  - Tests:
+    - The guide's queue-position walkthrough as a literal test, plus ahead/behind/trade-through/replace cases.
+    - Exact callback timings through a hand-written ITCH session.
+    - Latency turning a takeable quote into a missed one.
+    - Determinism (identical `Result` for identical inputs; latency changes it).
+    - Market maker unit tests, including a regression test for a freeze bug the sweep exposed: a quote filling while its cancel was in flight left that side waiting forever.
+  - Result: P&L falls monotonically with latency, from −$3,782 at 0 to −$9,351 at 50 ms, and the fill rate from 62% to 54%. The naive maker loses even at zero latency, because informed flow adversely selects it.
+  - Deviations from the plan:
+    - Live synthetic mode (strategy inside the generator's matching engine) not built; ITCH replay only.
+    - The position limit is checked when quoting, so in-flight fills can exceed it by about one quote (max 1,099 against a 1,000 limit).
+- [ ] M6: threading (optional)
 
 ### M1: Reference book (1 evening)
 **Files:** `ref/RefOrderBook.java`, `app/PrintBookDemo.java`, `test/ref/RefOrderBookTest.java`

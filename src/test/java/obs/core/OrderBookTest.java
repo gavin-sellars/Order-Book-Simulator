@@ -103,6 +103,24 @@ class OrderBookTest extends BookContractTest {
     }
 
     @Test
+    void reportsPriceSideAndArrivalPointOfRestingOrders() {
+        long before = fast.nextArrivalSeq();
+        book.addLimitOrder(1, BUY, px("150.00"), 100);
+        book.addLimitOrder(2, SELL, px("150.02"), 100);
+
+        assertEquals(px("150.00"), fast.priceOf(1));
+        assertEquals(BUY, fast.sideOf(1));
+        assertEquals(px("150.02"), fast.priceOf(2));
+        assertEquals(SELL, fast.sideOf(2));
+        assertTrue(fast.arrivalSeq(1) >= before && fast.arrivalSeq(2) < fast.nextArrivalSeq());
+
+        book.cancel(1);
+        assertEquals(-1, fast.priceOf(1));
+        assertEquals(-1, fast.sideOf(1));
+        assertEquals(-1, fast.priceOf(99));
+    }
+
+    @Test
     void freedSlotsAreReused() {
         OrderBook small = new OrderBook(BASE, Prices.CENT, LEVELS, 4, TradeListener.NONE);
 
