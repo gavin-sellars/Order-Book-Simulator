@@ -1,15 +1,15 @@
 package obs.app;
 
+import obs.core.Book;
 import obs.core.Prices;
 import obs.core.Side;
-import obs.ref.RefOrderBook;
 
 /** Draws the top of a book as the ladder picture used in Part 0 of the guide. Edge-of-system code. */
 final class BookFormatter {
 
     private BookFormatter() {}
 
-    static String render(RefOrderBook book, int levels) {
+    static String render(Book book, int levels) {
         long[] prices = new long[levels];
         long[] qtys = new long[levels];
         int[] counts = new int[levels];
@@ -23,7 +23,7 @@ final class BookFormatter {
 
         long bid = book.bestBid();
         long ask = book.bestAsk();
-        String spread = (bid == RefOrderBook.NO_BID || ask == RefOrderBook.NO_ASK)
+        String spread = (bid == Book.NO_BID || ask == Book.NO_ASK)
                 ? "n/a" : "$" + Prices.format(ask - bid);
         sb.append("  ---------------------------------  spread ").append(spread).append('\n');
 

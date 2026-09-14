@@ -1,5 +1,6 @@
 package obs.ref;
 
+import obs.core.Book;
 import obs.core.OrderResult;
 import obs.core.Side;
 import obs.core.TradeListener;
@@ -18,24 +19,9 @@ import java.util.TreeMap;
  * trust: the fast book is tested against it, and the synthetic ITCH generator uses it as its
  * matching engine, so the generator never depends on the code it is used to test.
  *
- * There are two ways to put an order in the book:
- * <ul>
- *   <li>Matching mode ({@link #addLimitOrder}, {@link #addMarketOrder}): the order trades
- *       against the opposite side where prices cross, and any limit remainder rests.</li>
- *   <li>Book-builder mode ({@link #addRestingOrder}, {@link #execute}, {@link #replace}): the
- *       order is applied exactly as given, with no matching. This is for replaying a feed,
- *       where the exchange has already done the matching. The caller is responsible for not
- *       creating a crossed book in this mode.</li>
- * </ul>
- *
- * Prices use the {@link obs.core.Prices} convention and must be positive multiples of the tick.
+ * Prices must be positive multiples of the tick. See {@link Book} for the two modes.
  */
-public final class RefOrderBook {
-
-    /** bestBid() when there are no bids. */
-    public static final long NO_BID = Long.MIN_VALUE;
-    /** bestAsk() when there are no asks. */
-    public static final long NO_ASK = Long.MAX_VALUE;
+public final class RefOrderBook implements Book {
 
     private static final class Order {
         final long id;
@@ -69,7 +55,7 @@ public final class RefOrderBook {
 
     // ---------------------------------------------------------------- matching mode
 
-    /** Matches what it can at the resting orders' prices, then rests the remainder. */
+    @Override
     public int addLimitOrder(long id, byte side, long price, int qty) {
         int check = validateNew(id, side, price, qty);
         if (check != OrderResult.ACCEPTED) return check;
@@ -79,7 +65,7 @@ public final class RefOrderBook {
         return OrderResult.ACCEPTED;
     }
 
-    /** Immediate-or-cancel at any price: fills what it can, discards the rest, never rests. */
+    @Override
     public int addMarketOrder(long id, byte side, int qty) {
         if (!Side.isValid(side)) return OrderResult.REJECTED_SIDE;
         if (qty <= 0) return OrderResult.REJECTED_QTY;
@@ -121,7 +107,7 @@ public final class RefOrderBook {
 
     // ---------------------------------------------------------------- book-builder mode
 
-    /** Rests the order exactly as given. Never matches, even if the price crosses. */
+    @Override
     public int addRestingOrder(long id, byte side, long price, int qty) {
         int check = validateNew(id, side, price, qty);
         if (check != OrderResult.ACCEPTED) return check;
@@ -130,13 +116,7 @@ public final class RefOrderBook {
         return OrderResult.ACCEPTED;
     }
 
-    /**
-     * A feed reported that resting order {@code id} traded {@code qty} shares. The trade is
-     * reported with {@link TradeListener#UNKNOWN_ID} as the aggressor.
-     *
-     * Returns false and changes nothing unless qty is in 1..remaining, because a feed can never
-     * execute more than an order has.
-     */
+    @Override
     public boolean execute(long id, int qty) {
         Order o = byId.get(id);
         if (o == null || qty <= 0 || qty > o.qty) return false;
@@ -147,11 +127,7 @@ public final class RefOrderBook {
         return true;
     }
 
-    /**
-     * Removes {@code oldId} and rests {@code newId} on the same side with the new price and size,
-     * at the back of the queue (a replace loses time priority, as with ITCH 'U').
-     * Validates everything before changing anything. Never matches.
-     */
+    @Override
     public int replace(long oldId, long newId, long price, int qty) {
         Order old = byId.get(oldId);
         if (old == null) return OrderResult.REJECTED_UNKNOWN_ID;
@@ -166,7 +142,7 @@ public final class RefOrderBook {
 
     // ---------------------------------------------------------------- both modes
 
-    /** Removes an order entirely. Returns false if it isn't in the book. */
+    @Override
     public boolean cancel(long id) {
         Order o = byId.get(id);
         if (o == null) return false;
@@ -174,10 +150,7 @@ public final class RefOrderBook {
         return true;
     }
 
-    /**
-     * Partial cancel: shrinks the order and keeps its queue position. Removes the order if
-     * {@code by} is at least its remaining quantity. Returns false if nothing was changed.
-     */
+    @Override
     public boolean reduce(long id, int by) {
         if (by <= 0) return false;
         Order o = byId.get(id);
@@ -190,50 +163,53 @@ public final class RefOrderBook {
 
     // ---------------------------------------------------------------- queries
 
+    @Override
     public long bestBid() {
         return bids.isEmpty() ? NO_BID : bids.firstKey();
     }
 
+    @Override
     public long bestAsk() {
         return asks.isEmpty() ? NO_ASK : asks.firstKey();
     }
 
-    /** True if the best bid is at or above the best ask. Impossible in matching mode. */
+    @Override
     public boolean isCrossed() {
         return !bids.isEmpty() && !asks.isEmpty() && bids.firstKey() >= asks.firstKey();
     }
 
+    @Override
     public long bidQtyAt(long price) {
         return totalQty(bids.get(price));
     }
 
+    @Override
     public long askQtyAt(long price) {
         return totalQty(asks.get(price));
     }
 
+    @Override
     public boolean contains(long id) {
         return byId.containsKey(id);
     }
 
-    /** Remaining quantity of a resting order, or 0 if it isn't in the book. */
+    @Override
     public int restingQty(long id) {
         Order o = byId.get(id);
         return o == null ? 0 : o.qty;
     }
 
+    @Override
     public int orderCount() {
         return byId.size();
     }
 
-    /** Number of non-empty price levels on one side. */
+    @Override
     public int levelCount(byte side) {
         return levels(side).size();
     }
 
-    /**
-     * Copies up to {@code n} levels of one side into the arrays, best price first.
-     * {@code counts} may be null. Returns the number of levels written.
-     */
+    @Override
     public int depth(byte side, int n, long[] prices, long[] qtys, int[] counts) {
         int i = 0;
         for (Map.Entry<Long, ArrayDeque<Order>> level : levels(side).entrySet()) {
@@ -246,7 +222,7 @@ public final class RefOrderBook {
         return i;
     }
 
-    /** Order ids resting at one price, in time priority (front of the queue first). */
+    @Override
     public long[] queueAt(byte side, long price) {
         ArrayDeque<Order> queue = levels(side).get(price);
         if (queue == null) return new long[0];

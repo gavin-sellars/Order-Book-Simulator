@@ -111,7 +111,13 @@ Every milestone ends in a working, committed state with passing tests. Rough eff
 ### Progress
 - [x] **M0** (2026-09-14): git repo, Gradle 9.7.1 wrapper, JDK 25 toolchain, JUnit 6.1.3 + jqwik 1.10.1.
 - [x] **M1** (2026-09-14): `obs.core` (`Side`, `OrderResult`, `TradeListener`, `Prices`), `RefOrderBook`, `PrintBookDemo`, 26 unit tests + a random-session property (never crossed, every share accounted for). Run with `.\gradlew.bat build run`.
-- [ ] M2: fast core
+- [x] **M2** (2026-09-14): `obs.mem` (`LongIntMap`, `LongBitSet`), `obs.core` (`OrderPool`, `OrderBook`, `BookValidator`, `Book` interface shared with `RefOrderBook`).
+  - Tests: the shared behaviour tests run against both books; the fast book is structurally validated after every test.
+  - Reference comparison: 2 × 1,000 random sessions (matching-only and mixed) comparing results, trades and full depth after every message, plus a seeded 1M-message run.
+  - Also: `LongIntMap` vs `HashMap` and `LongBitSet` vs `java.util.BitSet` properties, and a layering test.
+  - Planted-bug check: a touch-tracking bug, a reduce-quantity bug and a blank-slot map deletion were each caught.
+  - Deferred to M3: linear-scan touch option for the bitset benchmark comparison.
+- [ ] M3: measurement
 
 ### M1: Reference book (1 evening)
 **Files:** `ref/RefOrderBook.java`, `app/PrintBookDemo.java`, `test/ref/RefOrderBookTest.java`
