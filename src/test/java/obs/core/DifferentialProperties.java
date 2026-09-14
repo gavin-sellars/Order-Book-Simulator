@@ -43,21 +43,23 @@ class DifferentialProperties {
 
     /** Matching mode only: the book must also never cross. */
     @Property(tries = 1000)
-    void matchingSessionsAgreeWithReference(@ForAll("matchingSessions") List<Op> ops) {
-        runSession(ops, false);
+    void matchingSessionsAgreeWithReference(@ForAll("matchingSessions") List<Op> ops,
+                                            @ForAll OrderBook.TouchSearch touchSearch) {
+        runSession(ops, touchSearch, false);
     }
 
     /** Every operation mixed, including book-builder operations that are allowed to cross the book. */
     @Property(tries = 1000)
-    void mixedSessionsAgreeWithReference(@ForAll("mixedSessions") List<Op> ops) {
-        runSession(ops, true);
+    void mixedSessionsAgreeWithReference(@ForAll("mixedSessions") List<Op> ops,
+                                         @ForAll OrderBook.TouchSearch touchSearch) {
+        runSession(ops, touchSearch, true);
     }
 
-    private static void runSession(List<Op> ops, boolean allowCrossed) {
+    private static void runSession(List<Op> ops, OrderBook.TouchSearch touchSearch, boolean allowCrossed) {
         TradeRecorder refTrades = new TradeRecorder();
         TradeRecorder fastTrades = new TradeRecorder();
         RefOrderBook ref = new RefOrderBook(Prices.CENT, refTrades);
-        OrderBook fast = new OrderBook(BASE, Prices.CENT, LEVELS, POOL, fastTrades);
+        OrderBook fast = new OrderBook(BASE, Prices.CENT, LEVELS, POOL, fastTrades, touchSearch);
         Ids ids = new Ids();
 
         for (int i = 0; i < ops.size(); i++) {

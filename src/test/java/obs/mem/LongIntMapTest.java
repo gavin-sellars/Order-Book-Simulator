@@ -86,15 +86,17 @@ class LongIntMapTest {
     @Test
     void sequentialKeysSurviveHeavyChurn() {
         int window = 1000;
-        LongIntMap map = new LongIntMap(window);
+        for (LongIntMap.Hashing hashing : LongIntMap.Hashing.values()) {
+            LongIntMap map = new LongIntMap(window, hashing);
 
-        for (int k = 0; k < 1_000_000; k++) {
-            map.put(k, k);
-            if (k >= window) assertEquals(k - window, map.remove(k - window));
+            for (int k = 0; k < 1_000_000; k++) {
+                map.put(k, k);
+                if (k >= window) assertEquals(k - window, map.remove(k - window), hashing + " key " + k);
+            }
+
+            assertEquals(window, map.size());
+            for (int k = 1_000_000 - window; k < 1_000_000; k++) assertEquals(k, map.get(k));
         }
-
-        assertEquals(window, map.size());
-        for (int k = 1_000_000 - window; k < 1_000_000; k++) assertEquals(k, map.get(k));
     }
 
     // ---------------------------------------------------------------- model-based property
@@ -106,8 +108,8 @@ class LongIntMapTest {
      * wrap-around at the end of the table and backward-shift deletion all happen constantly.
      */
     @Property(tries = 500)
-    void behavesLikeHashMap(@ForAll("mapOps") List<MapOp> ops) {
-        LongIntMap map = new LongIntMap(32);            // capacity 64, holds 32
+    void behavesLikeHashMap(@ForAll("mapOps") List<MapOp> ops, @ForAll LongIntMap.Hashing hashing) {
+        LongIntMap map = new LongIntMap(32, hashing);   // capacity 64, holds 32
         Map<Long, Integer> model = new HashMap<>();
 
         for (MapOp op : ops) {

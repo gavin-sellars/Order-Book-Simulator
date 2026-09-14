@@ -31,6 +31,14 @@ class ArchitectureTest {
         assertNoReferences("core", Pattern.compile("\\bobs\\.(?!core\\b|mem\\b)\\w+"));
     }
 
+    /** No third-party libraries (HdrHistogram, JMH, ...) in the book or its data structures: only the JDK. */
+    @Test
+    void coreAndMemImportOnlyTheJdkAndEachOther() throws IOException {
+        Pattern nonJdkImport = Pattern.compile("^\\s*import\\s+(static\\s+)?(?!java\\.|obs\\.)\\S+");
+        assertNoReferences("core", nonJdkImport);
+        assertNoReferences("mem", nonJdkImport);
+    }
+
     private static void assertNoReferences(String pkg, Pattern forbidden) throws IOException {
         Path dir = SOURCES.resolve(pkg);
         assertTrue(Files.isDirectory(dir), "source directory not found: " + dir.toAbsolutePath());

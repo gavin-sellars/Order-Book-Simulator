@@ -48,6 +48,15 @@ public final class OrderBook implements Book {
     final LongIntMap idToSlot;
     private final TradeListener listener;
     private long nextArrivalSeq = 1;
+    private final boolean linearScan;
+
+    /** How to find the next best level when the best one empties. */
+    public enum TouchSearch {
+        /** Jump through the occupied-level bitset, 64 levels per step. The default. */
+        BITSET,
+        /** Step one level at a time, as in the guide's first version. Kept so the difference can be benchmarked. */
+        LINEAR_SCAN
+    }
 
     /**
      * @param basePrice    lowest price on the ladder; a positive multiple of tickSize
@@ -56,6 +65,12 @@ public final class OrderBook implements Book {
      * @param poolCapacity most orders that can rest at once
      */
     public OrderBook(long basePrice, long tickSize, int levels, int poolCapacity, TradeListener listener) {
+        this(basePrice, tickSize, levels, poolCapacity, listener, TouchSearch.BITSET);
+    }
+
+    /** As above, choosing how the next best level is found. */
+    public OrderBook(long basePrice, long tickSize, int levels, int poolCapacity, TradeListener listener,
+                     TouchSearch touchSearch) {
         if (tickSize <= 0) throw new IllegalArgumentException("tickSize must be positive");
         if (basePrice <= 0 || basePrice % tickSize != 0) {
             throw new IllegalArgumentException("basePrice must be a positive multiple of tickSize");
@@ -72,6 +87,7 @@ public final class OrderBook implements Book {
         this.tickSize = tickSize;
         this.levels = levels;
         this.listener = Objects.requireNonNull(listener, "listener");
+        this.linearScan = Objects.requireNonNull(touchSearch, "touchSearch") == TouchSearch.LINEAR_SCAN;
 
         for (int s = Side.BUY; s <= Side.SELL; s++) {
             levelHead[s] = filledWithEmpty(levels);
@@ -265,13 +281,29 @@ public final class OrderBook implements Book {
         if (head[idx] == EMPTY) {
             occupied[side].clear(idx);
             nonEmptyLevels[side]--;
-            // The bitset returns -1 (EMPTY) when no level is left on that side.
+            // Both searches return -1 (EMPTY) when no level is left on that side.
             if (side == Side.BUY) {
-                if (idx == bestBidIdx) bestBidIdx = occupied[side].prevSetBit(idx - 1);
+                if (idx == bestBidIdx) {
+                    bestBidIdx = linearScan ? scanDown(head, idx - 1) : occupied[side].prevSetBit(idx - 1);
+                }
             } else if (idx == bestAskIdx) {
-                bestAskIdx = occupied[side].nextSetBit(idx + 1);
+                bestAskIdx = linearScan ? scanUp(head, idx + 1) : occupied[side].nextSetBit(idx + 1);
             }
         }
+    }
+
+    /** Highest non-empty level at or below {@code from}, one level at a time, or EMPTY. */
+    private static int scanDown(int[] head, int from) {
+        int i = from;
+        while (i >= 0 && head[i] == EMPTY) i--;
+        return i;
+    }
+
+    /** Lowest non-empty level at or above {@code from}, one level at a time, or EMPTY. */
+    private int scanUp(int[] head, int from) {
+        int i = from;
+        while (i < levels && head[i] == EMPTY) i++;
+        return i < levels ? i : EMPTY;
     }
 
     private int validateNew(long id, byte side, int idx, int qty) {

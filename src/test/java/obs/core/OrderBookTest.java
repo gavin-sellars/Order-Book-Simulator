@@ -20,9 +20,14 @@ class OrderBookTest extends BookContractTest {
 
     private OrderBook fast;
 
+    /** Overridden by a subclass to run every test again with the other touch search. */
+    OrderBook.TouchSearch touchSearch() {
+        return OrderBook.TouchSearch.BITSET;
+    }
+
     @Override
     protected Book newBook(TradeListener listener) {
-        fast = new OrderBook(BASE, Prices.CENT, LEVELS, 1024, listener);
+        fast = new OrderBook(BASE, Prices.CENT, LEVELS, 1024, listener, touchSearch());
         return fast;
     }
 

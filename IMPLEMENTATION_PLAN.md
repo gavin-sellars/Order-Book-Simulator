@@ -117,7 +117,17 @@ Every milestone ends in a working, committed state with passing tests. Rough eff
   - Also: `LongIntMap` vs `HashMap` and `LongBitSet` vs `java.util.BitSet` properties, and a layering test.
   - Planted-bug check: a touch-tracking bug, a reduce-quantity bug and a blank-slot map deletion were each caught.
   - Deferred to M3: linear-scan touch option for the bitset benchmark comparison.
-- [ ] M3: measurement
+- [x] **M3** (2026-09-14): measurement. Results, hardware and commands are in `docs/BENCHMARKS.md`.
+  - Workload: `obs.workload` holds the standard prefilled book and a cancel-heavy `MessageTape`; a full replay restores the book exactly.
+  - Metrics: HdrHistogram `LatencyRecorder`.
+  - Benchmarks: four JMH classes (`OrderBookBenchmark`, `TapeBenchmark`, `TouchSearchBenchmark`, `LongIntMapBenchmark`), wired by hand as a `jmh` source set because the Gradle plugin predates Gradle 9.
+  - Tasks: `gradlew jmh | latency | epsilonSmoke`.
+  - `OrderBook.TouchSearch.LINEAR_SCAN` added for comparison, with all fast-book tests run for both searches.
+  - Zero allocation proven three ways: `ZeroAllocationTest` (per-thread allocation counter, 0 bytes), Epsilon GC for 200M messages (0 bytes), and JMH `-prof gc` (≈0 B/op on every fast-book benchmark).
+  - **Finding: the fast book is not faster everywhere.** It wins on deep-queue cancels (38 vs 270 ns) and on the realistic tape (114 vs 379 ns/message). It loses on single operations against a small book when the pool is 1M orders, because the id map is then ~24 MB of randomly accessed slots. With a 4,096-order pool, add+cancel falls to 34 ns (reference 46 ns), but crossing and sweeping are still slower than the reference.
+  - Experiment: unmixed (`IDENTITY`) hashing makes lookups 2-3× faster but removals ~1,500× slower (clustering), so `MIX` stays.
+  - Open question for M3 follow-up: pack each order's hot fields into fewer cache lines, and/or size the id map to the expected working set.
+- [ ] M4: synthetic ITCH feed
 
 ### M1: Reference book (1 evening)
 **Files:** `ref/RefOrderBook.java`, `app/PrintBookDemo.java`, `test/ref/RefOrderBookTest.java`
