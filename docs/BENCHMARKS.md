@@ -145,11 +145,27 @@ The bitset bounds the worst case: 18× faster across a 10,000-level gap, and no 
 
 Without mixing, lookups get 2–3× faster, but removal becomes catastrophic: 100,000 sequential live keys form one unbroken run of occupied slots, and backward-shift deletion scans to the end of that run on every remove. Mixing the key's bits is the right default for linear probing. This is why the guide recommends it, although its stated reason (long probe chains on insert) isn't where the cost shows up.
 
+## Synthetic ITCH session
+
+Measured after milestone 4, same machine. `gradlew itchSession` generates a full trading day (09:30 to 16:00, seed 20260914, default `FlowConfig`), writes it as ITCH 5.0, then replays the file into the fast book. The file replay runs with `-Xms2g -Xmx2g -XX:+AlwaysPreTouch` and G1; a single run, not a JMH measurement.
+
+| | |
+|---|---|
+| File | 119,393,609 bytes |
+| Messages | 3,979,093: 1,749,678 add, 84,921 execute, 219,649 cancel, 1,706,781 delete, 218,057 replace, 7 session |
+| Flow | 3,941,931 Hawkes events, 13,338,700 shares traded, cancel-to-trade 22.7 : 1 |
+| Generation (reference book matching + ITCH writing) | 2.17 s, **1,837,137 messages/sec** |
+| Replay into the fast book (memory-mapped file, `ItchReader` → `BookBuilder`) | 0.645 s, **6,172,136 messages/sec, 162.0 ns/message** |
+| Check | 0 rejected messages; closing touch 149.99 / 150.00 with 4,997 resting orders, identical to the generator's reference book; structure valid |
+
+The replay figure is lower than the 9.1M messages/sec tape replay above. It includes decoding ITCH from the mapped file, and the session's book holds up to 5,000 resting orders rather than about 1,000. A single end-to-end run like this also includes JIT warm-up.
+
 ## Reproducing
 
 ```
 gradlew test                                                   # includes ZeroAllocationTest
 gradlew epsilonSmoke                                           # 200M messages under Epsilon GC
+gradlew itchSession                                            # full-day synthetic ITCH: generate, replay, check
 gradlew latency                                                # HdrHistogram tables and coordinated omission demo
 gradlew jmh "-PjmhArgs=-f 1 -wi 3 -i 5 -w 1s -r 1s -prof gc"   # quick JMH suite as run here (~3 min)
 gradlew jmh "-PjmhArgs=-prof gc"                               # full defaults (~15 min)

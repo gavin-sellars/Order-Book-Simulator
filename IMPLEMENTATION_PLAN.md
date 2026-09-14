@@ -127,7 +127,24 @@ Every milestone ends in a working, committed state with passing tests. Rough eff
   - **Finding: the fast book is not faster everywhere.** It wins on deep-queue cancels (38 vs 270 ns) and on the realistic tape (114 vs 379 ns/message). It loses on single operations against a small book when the pool is 1M orders, because the id map is then ~24 MB of randomly accessed slots. With a 4,096-order pool, add+cancel falls to 34 ns (reference 46 ns), but crossing and sweeping are still slower than the reference.
   - Experiment: unmixed (`IDENTITY`) hashing makes lookups 2-3× faster but removals ~1,500× slower (clustering), so `MIX` stays.
   - Open question for M3 follow-up: pack each order's hot fields into fewer cache lines, and/or size the id map to the expected working set.
-- [ ] M4: synthetic ITCH feed
+- [x] **M4** (2026-09-14): synthetic ITCH feed.
+  - `obs.feed.itch`: `ItchLayout`, `ItchWriter`, `ItchReader`.
+  - `obs.feed`: `MessageHandler`, `BookBuilder`, `HawkesProcess` (multivariate, Ogata thinning), `FlowConfig`, `SyntheticItchGenerator` (matches on `RefOrderBook`, writes A/F/E/X/D/U plus S and R).
+  - `obs.app.ItchSessionMain` and the `gradlew itchSession` task.
+  - Tests:
+    - 10 byte-exact writer fixtures written by hand from the spec, plus reader fixtures for 'C' and 'P'.
+    - Hawkes statistics: Poisson variance, stationary rates, clustering via the Fano factor.
+    - Round trip: a 10-minute session (~100k events) with touch and order count compared after every event and full depth every 250 events, plus 25 random-seed sessions.
+    - Market shape: cancel-to-trade > 10, two-sided > 99%, spread ≤ 3 ticks > 90%.
+  - Full 390-minute session: 3,979,093 messages. Generation 1.84M msg/s, fast-book replay 6.17M msg/s, 0 rejected messages, and the final book equals the generator's.
+  - Deviations from the plan:
+    - Snapshots stay in memory in the test; no `.snap` sidecar.
+    - Replaces are always passive, so the "crossing replace" path isn't needed.
+    - The 10M-message check is a 4M-message full day, compared on its final state rather than after every event.
+  - Known limits:
+    - The price barely moves all day, because the flow is symmetric with no drift or volatility model.
+    - Resting orders sit at the 5,000 cap late in the session.
+- [ ] M5: simulation layer
 
 ### M1: Reference book (1 evening)
 **Files:** `ref/RefOrderBook.java`, `app/PrintBookDemo.java`, `test/ref/RefOrderBookTest.java`
