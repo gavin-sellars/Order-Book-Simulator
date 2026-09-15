@@ -180,7 +180,17 @@ Every milestone ends in a working, committed state with passing tests. Rough eff
     - two threads, park 3.33M
   - The parsing half is too cheap to be worth handing off; it only shifts work onto a second core.
   - The ring buffer is kept for a live feed, where the producer would be blocked on network I/O.
-- [ ] M7: polish (README)
+- [x] **M7** (2026-09-14): polish.
+  - `README.md`: description, results table with hardware near the top, P&L chart, three-command run, mermaid architecture diagram and package table, design decisions with rejected alternatives, where the design loses, how correctness is checked, and interview answers.
+  - Charts copied to `docs/images`.
+  - `.github/workflows/build.yml` runs `gradlew build jmhClasses` on JDK 25. Written but not run: there is no GitHub remote yet.
+  - Determinism is covered by `SimulationDeterminismTest` in the normal build rather than a separate CI step.
+- **Not done / next:**
+  - Real ITCH files (`MemorySegment` reader, gunzip, locate lookup already works).
+  - LOBSTER golden-file validation.
+  - Live synthetic simulation mode.
+  - Packing hot order fields and sizing the id map to the working set.
+  - Recentering ladder.
 
 ### M1: Reference book (1 evening)
 **Files:** `ref/RefOrderBook.java`, `app/PrintBookDemo.java`, `test/ref/RefOrderBookTest.java`
