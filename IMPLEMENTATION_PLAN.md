@@ -161,7 +161,26 @@ Every milestone ends in a working, committed state with passing tests. Rough eff
   - Deviations from the plan:
     - Live synthetic mode (strategy inside the generator's matching engine) not built; ITCH replay only.
     - The position limit is checked when quoting, so in-flight fills can exceed it by about one quote (max 1,099 against a 1,000 limit).
-- [ ] M6: threading (optional)
+- [x] **M6** (2026-09-14): threading. Results are in `docs/BENCHMARKS.md`.
+  - `obs.mem.SpscLongRingBuffer`:
+    - Producer-written and consumer-written fields are in separate padded groups, fixing the guide's shared-line cached sequences.
+    - The backing array is padded at both ends.
+    - Adds a batch `drain` alongside `offer`/`poll`.
+  - `ItchReader` is split into `scan` (framing, on the producer thread) and `deliver` (decoding, on the book thread); `replay` uses both on one thread.
+  - `obs.feed.PipelinedReplay` passes message offsets between the threads, with SPIN / YIELD / PARK idle strategies. `obs.app.PipelinedReplayMain` / `gradlew pipelinedReplay` compares the modes.
+  - Tests:
+    - Ring semantics, including wrap-around, drain limits and a throwing consumer.
+    - 20M-value two-thread stress for `poll` and `drain`.
+    - JOL layout check (`jol-core` 0.17, test only; it prints a JDK 25 `sun.misc.Unsafe` deprecation warning).
+    - Pipelined replay builds the same book as single-threaded for every idle strategy and ring size, and a book-thread failure reaches the caller.
+  - **Result: no speedup, as the guide warns for file replay.** Full-day session, median of 7:
+    - single thread 9.04M msg/s
+    - two threads, spin 8.88M
+    - two threads, yield 9.11M
+    - two threads, park 3.33M
+  - The parsing half is too cheap to be worth handing off; it only shifts work onto a second core.
+  - The ring buffer is kept for a live feed, where the producer would be blocked on network I/O.
+- [ ] M7: polish (README)
 
 ### M1: Reference book (1 evening)
 **Files:** `ref/RefOrderBook.java`, `app/PrintBookDemo.java`, `test/ref/RefOrderBookTest.java`

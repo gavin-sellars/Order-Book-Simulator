@@ -32,6 +32,7 @@ dependencies {
     testImplementation(platform("org.junit:junit-bom:6.1.3"))
     testImplementation("org.junit.jupiter:junit-jupiter")
     testImplementation("net.jqwik:jqwik:1.10.1")
+    testImplementation("org.openjdk.jol:jol-core:0.17")
     testRuntimeOnly("org.junit.platform:junit-platform-launcher")
 
     "jmhImplementation"("org.openjdk.jmh:jmh-core:1.37")
@@ -105,6 +106,15 @@ tasks.register<JavaExec>("latencySweep") {
     mainClass = "obs.app.LatencySweepMain"
     jvmArgs("-Xms2g", "-Xmx2g", "-XX:+AlwaysPreTouch")
     args(splitArgs("sweepArgs"))
+}
+
+tasks.register<JavaExec>("pipelinedReplay") {
+    group = "benchmark"
+    description = "Compares single-threaded and two-thread ITCH replay. -PpipelineArgs=\"[file] [runs]\"."
+    classpath = sourceSets["main"].runtimeClasspath
+    mainClass = "obs.app.PipelinedReplayMain"
+    jvmArgs("-Xms2g", "-Xmx2g", "-XX:+AlwaysPreTouch")
+    args(splitArgs("pipelineArgs"))
 }
 
 tasks.register<JavaExec>("epsilonSmoke") {

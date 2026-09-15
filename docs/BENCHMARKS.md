@@ -198,6 +198,28 @@ A bug found by this sweep: before the fix, a quote that filled while its cancel 
 
 Before the generator had a fair value, the same sweep gave $205.10 at every latency: with a price that never moved, latency had nothing to act on.
 
+## Threading: pipelined replay
+
+Milestone 6. `gradlew pipelinedReplay` replays the full-day session file (119,300,866 bytes, 3,976,272 messages delivered) into a fast book. It runs 3 warm-up runs, then 7 measured runs per mode, and checks every run's final book against the single-threaded one. In two-thread mode:
+- the main thread walks the file's framing and publishes each message's offset into a 65,536-slot `SpscLongRingBuffer`
+- a second thread decodes the messages and applies them to the book
+
+The JVM runs with `-Xms2g -Xmx2g -XX:+AlwaysPreTouch`.
+
+| Mode | Median msg/s | Best msg/s | Median ns/msg |
+|---|---|---|---|
+| single thread | 9,036,483 | 10,571,430 | 110.7 |
+| two threads, spin | 8,883,307 | 9,561,375 | 112.6 |
+| two threads, yield | **9,110,142** | 9,785,058 | 109.8 |
+| two threads, park | 3,325,254 | 3,426,799 | 300.7 |
+
+**Two threads don't help file replay.** Spin and yield are within noise of a single thread, and park is almost 3× slower.
+- **Nothing to offload.** Walking the length prefixes is a few instructions per message, so moving it to another thread saves almost nothing. The book thread still decodes and applies every message, and now pays for a ring buffer hop as well.
+- **Park is slow on Windows.** `LockSupport.parkNanos(1)` sleeps for the scheduler's timer resolution, far longer than a nanosecond, every time the consumer finds the ring empty.
+- **Where it would help.** The design pays off when the producer does slow, blocking work the book shouldn't wait on, such as reading a live feed from a socket. Here it is a demonstration of the single-writer principle, not a speedup.
+
+The single-threaded figure here (9.04M msg/s) is higher than the `itchSession` figure above (6.49M msg/s) because it is measured after warm-up; `itchSession` times a single cold run.
+
 ## Reproducing
 
 ```
@@ -206,6 +228,7 @@ gradlew epsilonSmoke                                           # 200M messages u
 gradlew itchSession                                            # full-day synthetic ITCH: generate, replay, check
 gradlew latencySweep                                           # market maker P&L at 0 / 10 us / 100 us / 1 ms / 10 ms / 50 ms
 python tools/plot_pnl.py                                       # charts from the sweep CSVs (needs matplotlib)
+gradlew pipelinedReplay                                        # single-thread vs two-thread ITCH replay
 gradlew latency                                                # HdrHistogram tables and coordinated omission demo
 gradlew jmh "-PjmhArgs=-f 1 -wi 3 -i 5 -w 1s -r 1s -prof gc"   # quick JMH suite as run here (~3 min)
 gradlew jmh "-PjmhArgs=-prof gc"                               # full defaults (~15 min)

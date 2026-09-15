@@ -9,6 +9,7 @@ import java.nio.ByteOrder;
 import java.nio.channels.FileChannel;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
+import java.util.function.IntConsumer;
 
 import static obs.feed.itch.ItchLayout.*;
 
@@ -25,6 +26,10 @@ import static obs.feed.itch.ItchLayout.*;
  * stocks, message types this reader doesn't know, and order messages before the directory entry
  * are skipped. A truncated stream, or a known message type with the wrong length, throws
  * {@link IllegalStateException}.
+ *
+ * Reading happens in two steps that can run on different threads: {@link #scan} walks the framing
+ * and picks out the messages to deliver, and {@link #deliver} decodes one message. The buffer is
+ * only ever read, so both threads can use one reader. {@link #replay} does both on one thread.
  */
 public final class ItchReader {
 
@@ -46,9 +51,17 @@ public final class ItchReader {
 
     /** Delivers every system event and every message for {@code ticker}. Returns how many messages were delivered. */
     public long replay(String ticker, MessageHandler handler) {
+        return scan(ticker, offset -> deliver(offset, handler));
+    }
+
+    /**
+     * Walks the stream and passes the offset of every message {@link #replay} would deliver to
+     * {@code sink}, in order, without decoding the messages. Returns how many offsets were passed.
+     */
+    public long scan(String ticker, IntConsumer sink) {
         byte[] wanted = alpha(ticker, 8);
         int locate = -1;
-        long delivered = 0;
+        long found = 0;
         int limit = buf.limit();
         int p = 0;
 
@@ -68,24 +81,27 @@ public final class ItchReader {
             }
 
             if (type == SYSTEM_EVENT) {
-                handler.onSystemEvent(timestamp(m), buf.get(m + EVENT_CODE));
-                delivered++;
+                sink.accept(m);
+                found++;
             } else if (type == STOCK_DIRECTORY) {
                 if (locate < 0 && fieldEquals(m + DIRECTORY_STOCK, wanted)) {
                     locate = Short.toUnsignedInt(buf.getShort(m + STOCK_LOCATE));
                 }
             } else if (expected >= 0 && locate >= 0 && Short.toUnsignedInt(buf.getShort(m + STOCK_LOCATE)) == locate) {
-                dispatch(type, m, handler);
-                delivered++;
+                sink.accept(m);
+                found++;
             }
             p = m + length;
         }
-        return delivered;
+        return found;
     }
 
-    private void dispatch(byte type, int m, MessageHandler handler) {
-        long ts = timestamp(m);
-        switch (type) {
+    /** Decodes the message at {@code offset} and passes it to {@code handler}. The offset must come from {@link #scan} on this reader. */
+    public void deliver(int offset, MessageHandler handler) {
+        long ts = timestamp(offset);
+        int m = offset;
+        switch (buf.get(m)) {
+            case SYSTEM_EVENT -> handler.onSystemEvent(ts, buf.get(m + EVENT_CODE));
             case ADD_ORDER, ADD_ORDER_MPID -> handler.onAdd(ts, buf.getLong(m + ORDER_REF),
                     side(m + ADD_SIDE), shares(m + ADD_SHARES), price(m + ADD_PRICE));
             case ORDER_EXECUTED -> handler.onExecute(ts, buf.getLong(m + ORDER_REF),
@@ -98,7 +114,7 @@ public final class ItchReader {
                     buf.getLong(m + REPLACE_NEW_REF), shares(m + REPLACE_SHARES), price(m + REPLACE_PRICE));
             case TRADE -> handler.onHiddenTrade(ts, side(m + TRADE_SIDE), shares(m + TRADE_SHARES),
                     price(m + TRADE_PRICE), buf.getLong(m + TRADE_MATCH_NUMBER));
-            default -> { }       // only reachable for types handled in replay()
+            default -> throw new IllegalArgumentException("no deliverable message at offset " + offset);
         }
     }
 
