@@ -58,12 +58,31 @@ class MessageTapeTest {
 
     @Test
     void flowIsCancelHeavy() {
-        int adds = TAPE.count(MessageTape.ADD) + TAPE.count(MessageTape.CROSS);
         int cancels = TAPE.count(MessageTape.CANCEL);
         int crosses = TAPE.count(MessageTape.CROSS);
 
         assertTrue(cancels > 10 * crosses, "cancels " + cancels + " vs crossing orders " + crosses);
-        assertTrue(cancels >= adds - 1, "every added order is eventually cancelled or cleaned up");
+    }
+
+    /** Guards the benchmark against the old tape's flaw: resting orders piling up into queues thousands deep. */
+    @Test
+    void bookStaysAtARealisticDepthAndCancelsTargetRestingOrders() {
+        OrderBook book = Workload.newFastBook(TradeListener.NONE);
+        Workload.prefill(book);
+        int maxResting = 0;
+        int missedCancels = 0;
+
+        for (int i = 0; i < TAPE.length(); i++) {
+            int result = TAPE.apply(book, i);
+            if (TAPE.type(i) == MessageTape.CANCEL && result == 0) missedCancels++;
+            maxResting = Math.max(maxResting, book.orderCount());
+        }
+
+        int limit = Workload.PREFILL_ORDERS + MessageTape.MAX_LIVE_FLOW_ORDERS;
+        assertTrue(maxResting <= limit, "resting orders peaked at " + maxResting);
+        assertTrue(maxResting > limit / 2, "the flow should build a book near its depth limit, peaked at " + maxResting);
+        // Flow cancels always hit a resting order. Only cleanup cancels can miss, for orders that filled since last checked.
+        assertTrue(missedCancels <= limit, "cancels that hit nothing: " + missedCancels);
     }
 
     @Test

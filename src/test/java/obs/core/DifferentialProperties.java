@@ -7,6 +7,7 @@ import net.jqwik.api.ForAll;
 import net.jqwik.api.Property;
 import net.jqwik.api.Provide;
 import net.jqwik.api.Tuple;
+import obs.ref.RefLinkedOrderBook;
 import obs.ref.RefOrderBook;
 import obs.testutil.TradeRecorder;
 
@@ -55,11 +56,14 @@ class DifferentialProperties {
         runSession(ops, touchSearch, true);
     }
 
+    /** The linked-list variant of the reference book, used to measure the O(1) cancel on its own, is held to the same standard. */
     private static void runSession(List<Op> ops, OrderBook.TouchSearch touchSearch, boolean allowCrossed) {
         TradeRecorder refTrades = new TradeRecorder();
         TradeRecorder fastTrades = new TradeRecorder();
+        TradeRecorder linkedTrades = new TradeRecorder();
         RefOrderBook ref = new RefOrderBook(Prices.CENT, refTrades);
         OrderBook fast = new OrderBook(BASE, Prices.CENT, LEVELS, POOL, fastTrades, touchSearch);
+        RefLinkedOrderBook linked = new RefLinkedOrderBook(Prices.CENT, linkedTrades);
         Ids ids = new Ids();
 
         for (int i = 0; i < ops.size(); i++) {
@@ -67,9 +71,14 @@ class DifferentialProperties {
             long[] resolved = ids.resolve(op);
             String step = "step " + i + " " + op + " ids=" + Arrays.toString(resolved);
 
-            assertEquals(apply(ref, op, resolved), apply(fast, op, resolved), step + ": result");
-            assertEquals(refTrades.drain(), fastTrades.drain(), step + ": trades");
+            int expected = apply(ref, op, resolved);
+            assertEquals(expected, apply(fast, op, resolved), step + ": result");
+            assertEquals(expected, apply(linked, op, resolved), step + ": linked result");
+            var expectedTrades = refTrades.drain();
+            assertEquals(expectedTrades, fastTrades.drain(), step + ": trades");
+            assertEquals(expectedTrades, linkedTrades.drain(), step + ": linked trades");
             assertSameBook(ref, fast, LEVELS, step);
+            assertSameBook(ref, linked, LEVELS, step + " (linked)");
             BookValidator.validate(fast, allowCrossed);
         }
     }

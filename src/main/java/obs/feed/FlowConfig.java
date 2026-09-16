@@ -107,6 +107,15 @@ public record FlowConfig(
                 maxPrice, baseRates, excitation, decay, minLiveOrders, maxLiveOrders, volatility, informed);
     }
 
+    /**
+     * Order pool size for a fast book replaying this flow: twice the most orders the generator
+     * keeps resting, rounded up to a power of two (16,384 for the defaults). Sized to the book
+     * rather than a worst case so the id map stays in the CPU cache; a pool that fills fails loudly.
+     */
+    public int poolCapacity() {
+        return Integer.highestOneBit(2 * maxLiveOrders - 1) << 1;
+    }
+
     /** Number of price levels between minPrice and maxPrice inclusive: the ladder a fast book needs. */
     public int ladderLevels() {
         return Math.toIntExact((maxPrice - minPrice) / tickSize + 1);

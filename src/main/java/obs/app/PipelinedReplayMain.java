@@ -81,6 +81,6 @@ public final class PipelinedReplayMain {
     }
 
     private static OrderBook newBook(FlowConfig flow) {
-        return new OrderBook(flow.minPrice(), flow.tickSize(), flow.ladderLevels(), 1 << 20, TradeListener.NONE);
+        return new OrderBook(flow.minPrice(), flow.tickSize(), flow.ladderLevels(), flow.poolCapacity(), TradeListener.NONE);
     }
 }

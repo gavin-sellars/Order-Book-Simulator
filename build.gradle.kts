@@ -3,6 +3,7 @@ import org.gradle.api.tasks.testing.logging.TestExceptionFormat
 plugins {
     java
     application
+    jacoco
 }
 
 group = "obs"
@@ -65,6 +66,20 @@ tasks.test {
     }
 }
 
+jacoco {
+    toolVersion = "0.8.14"
+}
+
+// Covers the main source set only: benchmarks and JMH's generated code live in the jmh source set.
+// The CLI entry points in obs.app are included and have no unit tests.
+tasks.jacocoTestReport {
+    dependsOn(tasks.test)
+    reports {
+        xml.required = true
+        html.required = true
+    }
+}
+
 fun splitArgs(property: String): List<String> =
     (findProperty(property) as String?)?.trim()?.split(Regex("\\s+"))?.filter { it.isNotEmpty() } ?: emptyList()
 
@@ -97,6 +112,15 @@ tasks.register<JavaExec>("itchSession") {
     mainClass = "obs.app.ItchSessionMain"
     jvmArgs("-Xms2g", "-Xmx2g", "-XX:+AlwaysPreTouch")
     args(splitArgs("itchArgs"))
+}
+
+tasks.register<JavaExec>("replayLatency") {
+    group = "benchmark"
+    description = "Warmed-up ITCH replay throughput and per-message percentiles for one book. -PreplayArgs=\"<fast|ref|refLinked|fast:POOL> [runs] [file]\"."
+    classpath = sourceSets["main"].runtimeClasspath
+    mainClass = "obs.app.ReplayLatencyMain"
+    jvmArgs("-Xms2g", "-Xmx2g", "-XX:+AlwaysPreTouch")
+    args(splitArgs("replayArgs"))
 }
 
 tasks.register<JavaExec>("latencySweep") {

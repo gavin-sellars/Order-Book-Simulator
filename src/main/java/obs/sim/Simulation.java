@@ -90,8 +90,14 @@ public final class Simulation implements MessageHandler, StrategyContext {
     private long maxAbsPosition;
     private long rejectedOrders;
 
+    /** A simulation whose book holds up to 65,536 resting orders. */
     public Simulation(long minPrice, long tickSize, int levels, Strategy strategy, Config config) {
-        this.book = new OrderBook(minPrice, tickSize, levels, 1 << 20, TradeListener.NONE);
+        this(minPrice, tickSize, levels, 1 << 16, strategy, config);
+    }
+
+    /** @param poolCapacity most historical orders resting at once; the book fails loudly beyond it */
+    public Simulation(long minPrice, long tickSize, int levels, int poolCapacity, Strategy strategy, Config config) {
+        this.book = new OrderBook(minPrice, tickSize, levels, poolCapacity, TradeListener.NONE);
         this.builder = new BookBuilder(book);
         this.orders = new SimulatedOrders(book, this::exchangeFill);
         this.strategy = Objects.requireNonNull(strategy, "strategy");
@@ -102,7 +108,7 @@ public final class Simulation implements MessageHandler, StrategyContext {
 
     /** A simulation whose price ladder covers the prices a synthetic session can use. */
     public static Simulation forFlow(FlowConfig flow, Strategy strategy, Config config) {
-        return new Simulation(flow.minPrice(), flow.tickSize(), flow.ladderLevels(), strategy, config);
+        return new Simulation(flow.minPrice(), flow.tickSize(), flow.ladderLevels(), flow.poolCapacity(), strategy, config);
     }
 
     public Result run(ItchReader reader, String ticker) {
