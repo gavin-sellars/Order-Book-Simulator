@@ -5,6 +5,7 @@ import obs.core.OrderBook;
 import obs.core.TradeListener;
 import obs.feed.BookBuilder;
 import obs.feed.FlowConfig;
+import obs.feed.StockProfile;
 import obs.feed.SyntheticItchGenerator;
 import obs.feed.itch.ItchReader;
 import obs.feed.itch.ItchWriter;
@@ -21,8 +22,12 @@ import java.util.Arrays;
 
 /**
  * Warmed-up replay throughput and per-message latency percentiles for one book over a full ITCH
- * session file. Run with {@code gradlew replayLatency -PreplayArgs="<book> [runs] [file]"}, where
- * the book is fast (pool sized by {@link FlowConfig#poolCapacity}), fast:POOL, ref or refLinked.
+ * session file. Run with {@code gradlew replayLatency -PreplayArgs="<book> [runs] [file] [ticker]"},
+ * where the book is fast, fast:POOL, ref or refLinked.
+ *
+ * Without a ticker the file is the synthetic session, and the book is sized from {@link FlowConfig}.
+ * With one, the file is real data (a whole day or a per-stock extract), and the book is sized from a
+ * {@link StockProfile} measured in an untimed pass first.
  *
  * One book per JVM: replaying two in the same JVM would make BookBuilder's calls into Book
  * megamorphic and slow down whichever runs second.
@@ -40,33 +45,56 @@ import java.util.Arrays;
  */
 public final class ReplayLatencyMain {
 
+    /** What to replay and the ladder and pool a fast book needs for it. */
+    private record Target(String ticker, long basePrice, long tickSize, int levels, int pool, long priceTick,
+                          int farCapacity, String description) {
+
+        static Target of(FlowConfig flow) {
+            return new Target(flow.ticker(), flow.minPrice(), flow.tickSize(), flow.ladderLevels(), flow.poolCapacity(),
+                    flow.tickSize(), 0, "synthetic session");
+        }
+
+        static Target of(StockProfile p) {
+            return new Target(p.ticker(), p.basePrice(), p.ladderTick(), p.ladderLevels(), p.poolCapacity(),
+                    StockProfile.PRICE_TICK, p.farCapacity(), p.toString());
+        }
+    }
+
     public static void main(String[] args) throws IOException {
         String impl = args.length > 0 ? args[0] : "fast";
         int runs = args.length > 1 ? Integer.parseInt(args[1]) : 4;
         Path file = Path.of(args.length > 2 ? args[2] : "build/session.itch");
+        String ticker = args.length > 3 ? args[3] : null;
         if (runs < 2) throw new IllegalArgumentException("need at least 2 runs: the first is warm-up");
-        FlowConfig flow = FlowConfig.defaults(20260914L);
 
-        if (!Files.exists(file)) {
-            Files.createDirectories(file.toAbsolutePath().getParent());
-            try (ItchWriter writer = ItchWriter.create(file, flow.stockLocate(), flow.ticker())) {
-                SyntheticItchGenerator.generate(flow, writer, SyntheticItchGenerator.Observer.NONE);
+        Target target;
+        if (ticker == null) {
+            FlowConfig flow = FlowConfig.defaults(20260914L);
+            if (!Files.exists(file)) {
+                Files.createDirectories(file.toAbsolutePath().getParent());
+                try (ItchWriter writer = ItchWriter.create(file, flow.stockLocate(), flow.ticker())) {
+                    SyntheticItchGenerator.generate(flow, writer, SyntheticItchGenerator.Observer.NONE);
+                }
             }
+            target = Target.of(flow);
+        } else {
+            target = Target.of(StockProfile.measure(ItchReader.open(file), ticker));
         }
 
         System.out.printf("JVM: %s %s, args %s, %d logical CPUs%n", System.getProperty("java.vm.name"),
                 System.getProperty("java.runtime.version"), ManagementFactory.getRuntimeMXBean().getInputArguments(),
                 Runtime.getRuntime().availableProcessors());
-        System.out.printf("File: %s (%,d bytes). Book: %s%n%n", file, Files.size(file), describe(impl, flow));
+        System.out.printf("File: %s (%,d bytes), %s. Book: %s%n%n", file, Files.size(file), target.description(),
+                describe(impl, target));
 
         double[] rates = new double[runs];
         for (int r = 0; r < runs; r++) {
-            ItchReader reader = mapAndTouch(file, flow);
-            BookBuilder builder = new BookBuilder(newBook(impl, flow));
+            ItchReader reader = mapAndTouch(file, target);
+            BookBuilder builder = new BookBuilder(newBook(impl, target));
 
             long[] before = jvmCounters();
             long start = System.nanoTime();
-            long delivered = reader.replay(flow.ticker(), builder);
+            long delivered = reader.replay(target.ticker(), builder);
             long elapsed = System.nanoTime() - start;
             long[] after = jvmCounters();
 
@@ -82,11 +110,11 @@ public final class ReplayLatencyMain {
         double median = measured.length % 2 == 1 ? measured[mid] : (measured[mid - 1] + measured[mid]) / 2;
         System.out.printf("Median of runs 2-%d: %,.0f msg/s (%.1f ns/msg)%n%n", runs, median, 1e9 / median);
 
-        ItchReader reader = mapAndTouch(file, flow);
-        int[] offsets = new int[Math.toIntExact(reader.scan(flow.ticker(), offset -> { }))];
+        ItchReader reader = mapAndTouch(file, target);
+        int[] offsets = new int[Math.toIntExact(reader.scan(target.ticker(), offset -> { }))];
         int[] cursor = new int[1];
-        reader.scan(flow.ticker(), offset -> offsets[cursor[0]++] = offset);
-        BookBuilder builder = new BookBuilder(newBook(impl, flow));
+        reader.scan(target.ticker(), offset -> offsets[cursor[0]++] = offset);
+        BookBuilder builder = new BookBuilder(newBook(impl, target));
         LatencyRecorder latency = new LatencyRecorder("decode + apply");
 
         long[] before = jvmCounters();
@@ -105,34 +133,37 @@ public final class ReplayLatencyMain {
                 after[0] - before[0], after[1] - before[1], after[2] - before[2], nanoTimeCost());
     }
 
-    private static Book newBook(String impl, FlowConfig flow) {
+    private static Book newBook(String impl, Target target) {
         if (impl.equals("fast") || impl.startsWith("fast:")) {
-            int pool = impl.equals("fast") ? flow.poolCapacity() : Integer.parseInt(impl.substring("fast:".length()));
-            return new OrderBook(flow.minPrice(), flow.tickSize(), flow.ladderLevels(), pool, TradeListener.NONE);
+            int pool = impl.equals("fast") ? target.pool() : Integer.parseInt(impl.substring("fast:".length()));
+            return new OrderBook(target.basePrice(), target.tickSize(), target.levels(), pool, TradeListener.NONE,
+                    OrderBook.TouchSearch.BITSET, target.priceTick(), target.farCapacity());
         }
         return switch (impl) {
-            case "ref" -> new RefOrderBook(flow.tickSize(), TradeListener.NONE);
-            case "refLinked" -> new RefLinkedOrderBook(flow.tickSize(), TradeListener.NONE);
+            case "ref" -> new RefOrderBook(target.priceTick(), TradeListener.NONE);
+            case "refLinked" -> new RefLinkedOrderBook(target.priceTick(), TradeListener.NONE);
             default -> throw new IllegalArgumentException("unknown book: " + impl + " (fast, fast:POOL, ref or refLinked)");
         };
     }
 
-    private static String describe(String impl, FlowConfig flow) {
-        return newBook(impl, flow) instanceof OrderBook fast
-                ? String.format("fast, pool %,d orders", fast.poolCapacity())
+    private static String describe(String impl, Target target) {
+        return newBook(impl, target) instanceof OrderBook fast
+                ? String.format("fast, pool %,d orders, %,d ladder levels, %,d far levels a side",
+                        fast.poolCapacity(), target.levels(), target.farCapacity())
                 : impl;
     }
 
     /** Maps the file and walks its framing once, which touches every page before anything is timed. */
-    private static ItchReader mapAndTouch(Path file, FlowConfig flow) throws IOException {
+    private static ItchReader mapAndTouch(Path file, Target target) throws IOException {
         ItchReader reader = ItchReader.open(file);
-        reader.scan(flow.ticker(), offset -> { });
+        reader.scan(target.ticker(), offset -> { });
         return reader;
     }
 
     private static void requireClean(BookBuilder builder) {
         if (builder.rejectedMessages() != 0) {
-            throw new IllegalStateException(builder.rejectedMessages() + " messages were rejected; is this the default session file?");
+            throw new IllegalStateException(builder.rejectedMessages() + " messages were rejected ("
+                    + builder.unknownRefMessages() + " for unknown orders); the book doesn't fit this file");
         }
     }
 

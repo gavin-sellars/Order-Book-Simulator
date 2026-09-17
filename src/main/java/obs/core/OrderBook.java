@@ -18,10 +18,23 @@ import java.util.Objects;
  *   <li>A {@link LongBitSet} of non-empty levels finds the next best level 64 levels at a time.</li>
  * </ul>
  *
+ * <h2>Far levels</h2>
+ * Real books hold orders nowhere near the market: a bid at $0.0001 or an offer at $199,999 in a
+ * $180 stock. A ladder covering all of that would need billions of levels, so the ladder is a
+ * window, and in book-builder mode an order priced outside it (or between two of its levels) goes
+ * to a <em>far level</em> instead. Far levels are kept per side in a small array sorted by price;
+ * their queues use the same pool links and level arrays, at indexes from {@code levels} upwards, so
+ * cancels and executions work unchanged. Creating or removing a far level costs a binary search and
+ * an array shift, which is fine because they are rare. The touch is the better of the window's best
+ * level and the best far level. With the default of zero far levels the book rejects such prices,
+ * as it always did. Matching mode still only accepts prices on the ladder, but it does trade against
+ * far orders already resting.
+ *
  * Per-side state is stored as {@code [side][level]} so that {@link Side#BUY} (0) and
  * {@link Side#SELL} (1) select the row directly.
  *
- * Prices outside the ladder, or not on a tick, are rejected with {@link OrderResult#REJECTED_PRICE}.
+ * Prices that are not positive multiples of the price tick are rejected with
+ * {@link OrderResult#REJECTED_PRICE}, as are prices off the ladder when no far level can take them.
  * Single-threaded: exactly one thread may use a book.
  */
 public final class OrderBook implements Book {
@@ -29,19 +42,32 @@ public final class OrderBook implements Book {
     /** Marks an empty level, the end of a list, or "no best level". Equal to LongBitSet's "not found". */
     static final int EMPTY = -1;
 
+    /** Level index meaning "not on the ladder, but valid for a far level". Never stored. */
+    private static final int FAR = -2;
+
     final long basePrice;
     final long tickSize;
     final int levels;
+    final long priceTick;
+    final int farCapacity;
 
-    // The price ladder. A level is empty exactly when its head is EMPTY.
+    // Level state, indexed [side][level]. Indexes below `levels` are the ladder; from `levels` up,
+    // far levels by slot. A level is empty exactly when its head is EMPTY.
     final int[][] levelHead = new int[2][];      // slot of the oldest order
     final int[][] levelTail = new int[2][];      // slot of the newest order
     final long[][] levelQty = new long[2][];     // total remaining quantity
     final int[][] levelCount = new int[2][];     // number of orders
-    final LongBitSet[] occupied = new LongBitSet[2];
-    final int[] nonEmptyLevels = new int[2];
+    final LongBitSet[] occupied = new LongBitSet[2];     // ladder levels only
+    final int[] nonEmptyLevels = new int[2];             // ladder and far levels
 
-    int bestBidIdx = EMPTY;
+    // Far levels: each side's live far slots sorted by ascending price, their prices, and free slots.
+    final long[][] farPrice = new long[2][];
+    final int[][] farSorted = new int[2][];
+    final int[] farCount = new int[2];
+    private final int[][] farFree = new int[2][];
+    private final int[] farFreeCount = new int[2];
+
+    int bestBidIdx = EMPTY;     // best ladder level; a far level may still be better
     int bestAskIdx = EMPTY;
 
     final OrderPool pool;
@@ -71,12 +97,29 @@ public final class OrderBook implements Book {
     /** As above, choosing how the next best level is found. */
     public OrderBook(long basePrice, long tickSize, int levels, int poolCapacity, TradeListener listener,
                      TouchSearch touchSearch) {
+        this(basePrice, tickSize, levels, poolCapacity, listener, touchSearch, tickSize, 0);
+    }
+
+    /**
+     * A book whose ladder is a window, with far levels for everything else.
+     *
+     * @param priceTick   smallest valid price increment; divides tickSize. Prices must be positive multiples of it.
+     * @param farCapacity most far price levels one side can hold at once; the book fails loudly beyond it
+     */
+    public OrderBook(long basePrice, long tickSize, int levels, int poolCapacity, TradeListener listener,
+                     TouchSearch touchSearch, long priceTick, int farCapacity) {
         if (tickSize <= 0) throw new IllegalArgumentException("tickSize must be positive");
         if (basePrice <= 0 || basePrice % tickSize != 0) {
             throw new IllegalArgumentException("basePrice must be a positive multiple of tickSize");
         }
         if (levels <= 0) throw new IllegalArgumentException("levels must be positive");
         if (poolCapacity <= 0) throw new IllegalArgumentException("poolCapacity must be positive");
+        if (priceTick <= 0 || tickSize % priceTick != 0) {
+            throw new IllegalArgumentException("priceTick must be positive and divide tickSize");
+        }
+        if (farCapacity < 0 || farCapacity > Integer.MAX_VALUE - levels) {
+            throw new IllegalArgumentException("farCapacity out of range: " + farCapacity);
+        }
         try {
             Math.addExact(basePrice, Math.multiplyExact(tickSize, (long) levels));
         } catch (ArithmeticException e) {
@@ -86,15 +129,23 @@ public final class OrderBook implements Book {
         this.basePrice = basePrice;
         this.tickSize = tickSize;
         this.levels = levels;
+        this.priceTick = priceTick;
+        this.farCapacity = farCapacity;
         this.listener = Objects.requireNonNull(listener, "listener");
         this.linearScan = Objects.requireNonNull(touchSearch, "touchSearch") == TouchSearch.LINEAR_SCAN;
 
+        int total = levels + farCapacity;
         for (int s = Side.BUY; s <= Side.SELL; s++) {
-            levelHead[s] = filledWithEmpty(levels);
-            levelTail[s] = filledWithEmpty(levels);
-            levelQty[s] = new long[levels];
-            levelCount[s] = new int[levels];
+            levelHead[s] = filledWithEmpty(total);
+            levelTail[s] = filledWithEmpty(total);
+            levelQty[s] = new long[total];
+            levelCount[s] = new int[total];
             occupied[s] = new LongBitSet(levels);
+            farPrice[s] = new long[farCapacity];
+            farSorted[s] = new int[farCapacity];
+            farFree[s] = new int[farCapacity];
+            for (int i = 0; i < farCapacity; i++) farFree[s][i] = farCapacity - 1 - i;     // hand out slot 0 first
+            farFreeCount[s] = farCapacity;
         }
         pool = new OrderPool(poolCapacity);
         idToSlot = new LongIntMap(poolCapacity);
@@ -114,7 +165,7 @@ public final class OrderBook implements Book {
         int check = validateNew(id, side, idx, qty);
         if (check != OrderResult.ACCEPTED) return check;
 
-        int remaining = match(id, side, idx, qty);
+        int remaining = match(id, side, idx, price, qty);
         if (remaining > 0) rest(id, side, idx, remaining);
         return OrderResult.ACCEPTED;
     }
@@ -125,13 +176,14 @@ public final class OrderBook implements Book {
         if (qty <= 0) return OrderResult.REJECTED_QTY;
         if (idToSlot.get(id) != LongIntMap.NOT_FOUND) return OrderResult.REJECTED_DUP_ID;
 
-        // A limit at the far end of the ladder crosses every level.
-        match(id, side, side == Side.BUY ? levels - 1 : 0, qty);
+        // A limit at the far end of the ladder, and beyond it for far levels, crosses every level.
+        boolean buying = side == Side.BUY;
+        match(id, side, buying ? levels - 1 : 0, buying ? Long.MAX_VALUE : Long.MIN_VALUE, qty);
         return OrderResult.ACCEPTED;
     }
 
     /** Crosses against the opposite side. Returns the unfilled quantity. */
-    private int match(long aggressorId, byte side, int limitIdx, int qty) {
+    private int match(long aggressorId, byte side, int limitIdx, long limitPrice, int qty) {
         boolean buying = side == Side.BUY;
         byte restingSide = Side.opposite(side);
         int[] head = levelHead[restingSide];
@@ -139,10 +191,18 @@ public final class OrderBook implements Book {
 
         while (qty > 0) {
             int best = buying ? bestAskIdx : bestBidIdx;
-            // A buyer crosses when the best ask is at or below their limit; a seller the reverse.
-            if (best == EMPTY || (buying ? best > limitIdx : best < limitIdx)) break;
+            if (farCount[restingSide] != 0) {
+                // Far levels in play: compare prices, since far indexes aren't in price order.
+                best = bestLevel(restingSide, best);
+                if (best == EMPTY) break;
+                long bestPrice = priceAt(restingSide, best);
+                if (buying ? bestPrice > limitPrice : bestPrice < limitPrice) break;
+            } else if (best == EMPTY || (buying ? best > limitIdx : best < limitIdx)) {
+                // A buyer crosses when the best ask is at or below their limit; a seller the reverse.
+                break;
+            }
 
-            long price = toPrice(best);
+            long price = priceAt(restingSide, best);
             do {
                 int slot = head[best];                  // FIFO: oldest order first
                 int fill = Math.min(qty, pool.qty[slot]);
@@ -163,10 +223,11 @@ public final class OrderBook implements Book {
 
     @Override
     public int addRestingOrder(long id, byte side, long price, int qty) {
-        int idx = indexOf(price);
+        int idx = restingIndexOf(price);
         int check = validateNew(id, side, idx, qty);
         if (check != OrderResult.ACCEPTED) return check;
 
+        if (idx == FAR) idx = farLevel(side, price);
         rest(id, side, idx, qty);
         return OrderResult.ACCEPTED;
     }
@@ -178,11 +239,12 @@ public final class OrderBook implements Book {
 
         byte side = pool.side[slot];
         int idx = pool.levelIdx[slot];
+        long price = priceAt(side, idx);        // before removal can free a far level
         pool.qty[slot] -= qty;
         levelQty[side][idx] -= qty;
         if (pool.qty[slot] == 0) removeOrder(slot);
 
-        listener.onTrade(TradeListener.UNKNOWN_ID, id, toPrice(idx), qty, Side.opposite(side));
+        listener.onTrade(TradeListener.UNKNOWN_ID, id, price, qty, Side.opposite(side));
         return true;
     }
 
@@ -191,12 +253,13 @@ public final class OrderBook implements Book {
         int slot = idToSlot.get(oldId);
         if (slot == LongIntMap.NOT_FOUND) return OrderResult.REJECTED_UNKNOWN_ID;
         if (qty <= 0) return OrderResult.REJECTED_QTY;
-        int idx = indexOf(price);
+        int idx = restingIndexOf(price);
         if (idx == EMPTY) return OrderResult.REJECTED_PRICE;
         if (newId != oldId && idToSlot.get(newId) != LongIntMap.NOT_FOUND) return OrderResult.REJECTED_DUP_ID;
 
         byte side = pool.side[slot];
-        removeOrder(slot);
+        removeOrder(slot);                          // may free the far level the new price needs; farLevel recreates it
+        if (idx == FAR) idx = farLevel(side, price);
         rest(newId, side, idx, qty);
         return OrderResult.ACCEPTED;
     }
@@ -243,7 +306,7 @@ public final class OrderBook implements Book {
         pool.next[slot] = EMPTY;
         if (t == EMPTY) {
             levelHead[side][idx] = slot;
-            occupied[side].set(idx);
+            if (idx < levels) occupied[side].set(idx);
             nonEmptyLevels[side]++;
         } else {
             pool.next[t] = slot;
@@ -254,6 +317,7 @@ public final class OrderBook implements Book {
         levelCount[side][idx]++;
         idToSlot.put(id, slot);
 
+        if (idx >= levels) return;                  // far levels are ordered by farSorted, not the touch index
         if (side == Side.BUY) {
             if (bestBidIdx == EMPTY || idx > bestBidIdx) bestBidIdx = idx;
         } else if (bestAskIdx == EMPTY || idx < bestAskIdx) {
@@ -279,8 +343,12 @@ public final class OrderBook implements Book {
         pool.release(slot);
 
         if (head[idx] == EMPTY) {
-            occupied[side].clear(idx);
             nonEmptyLevels[side]--;
+            if (idx >= levels) {
+                freeFarLevel(side, idx - levels);
+                return;
+            }
+            occupied[side].clear(idx);
             // Both searches return -1 (EMPTY) when no level is left on that side.
             if (side == Side.BUY) {
                 if (idx == bestBidIdx) {
@@ -323,8 +391,81 @@ public final class OrderBook implements Book {
         return (int) idx;
     }
 
+    /** Ladder index for a resting order, FAR if it belongs on a far level, or EMPTY if the price is invalid. */
+    private int restingIndexOf(long price) {
+        int idx = indexOf(price);
+        if (idx != EMPTY || farCapacity == 0 || price <= 0 || price % priceTick != 0) return idx;
+        return FAR;
+    }
+
     private long toPrice(int idx) {
         return basePrice + idx * tickSize;
+    }
+
+    /** Price of a ladder or far level. */
+    private long priceAt(byte side, int idx) {
+        return idx < levels ? toPrice(idx) : farPrice[side][idx - levels];
+    }
+
+    /** The better of a side's best ladder level and its best far level, as a level index, or EMPTY. */
+    private int bestLevel(byte side, int ladderBest) {
+        int count = farCount[side];
+        if (count == 0) return ladderBest;
+        if (side == Side.BUY) {
+            int far = farSorted[side][count - 1];
+            return ladderBest == EMPTY || farPrice[side][far] > toPrice(ladderBest) ? levels + far : ladderBest;
+        }
+        int far = farSorted[side][0];
+        return ladderBest == EMPTY || farPrice[side][far] < toPrice(ladderBest) ? levels + far : ladderBest;
+    }
+
+    /** Position of {@code price} in the side's sorted far levels, or -(insertion point) - 1, as Arrays.binarySearch. */
+    private int farSearch(byte side, long price) {
+        int[] sorted = farSorted[side];
+        long[] prices = farPrice[side];
+        int lo = 0;
+        int hi = farCount[side] - 1;
+        while (lo <= hi) {
+            int mid = (lo + hi) >>> 1;
+            long p = prices[sorted[mid]];
+            if (p < price) lo = mid + 1;
+            else if (p > price) hi = mid - 1;
+            else return mid;
+        }
+        return -(lo + 1);
+    }
+
+    /** Level index of the far level at {@code price}, creating it if needed. */
+    private int farLevel(byte side, long price) {
+        int pos = farSearch(side, price);
+        if (pos >= 0) return levels + farSorted[side][pos];
+        if (farFreeCount[side] == 0) {
+            throw new IllegalStateException("far levels exhausted at " + farCapacity + " on side " + Side.name(side));
+        }
+        int far = farFree[side][--farFreeCount[side]];
+        int insert = -pos - 1;
+        int[] sorted = farSorted[side];
+        System.arraycopy(sorted, insert, sorted, insert + 1, farCount[side] - insert);
+        sorted[insert] = far;
+        farCount[side]++;
+        farPrice[side][far] = price;
+        return levels + far;
+    }
+
+    private void freeFarLevel(byte side, int far) {
+        int pos = farSearch(side, farPrice[side][far]);
+        int[] sorted = farSorted[side];
+        System.arraycopy(sorted, pos + 1, sorted, pos, farCount[side] - pos - 1);
+        farCount[side]--;
+        farFree[side][farFreeCount[side]++] = far;
+    }
+
+    /** Level index holding {@code price} on a side, ladder or far, or EMPTY. */
+    private int levelOf(byte side, long price) {
+        int idx = indexOf(price);
+        if (idx != EMPTY || farCount[side] == 0) return idx;
+        int pos = farSearch(side, price);
+        return pos >= 0 ? levels + farSorted[side][pos] : EMPTY;
     }
 
     private static byte checkSide(byte side) {
@@ -336,28 +477,33 @@ public final class OrderBook implements Book {
 
     @Override
     public long bestBid() {
-        return bestBidIdx == EMPTY ? NO_BID : toPrice(bestBidIdx);
+        long ladder = bestBidIdx == EMPTY ? NO_BID : toPrice(bestBidIdx);
+        int count = farCount[Side.BUY];
+        return count == 0 ? ladder : Math.max(ladder, farPrice[Side.BUY][farSorted[Side.BUY][count - 1]]);
     }
 
     @Override
     public long bestAsk() {
-        return bestAskIdx == EMPTY ? NO_ASK : toPrice(bestAskIdx);
+        long ladder = bestAskIdx == EMPTY ? NO_ASK : toPrice(bestAskIdx);
+        return farCount[Side.SELL] == 0 ? ladder : Math.min(ladder, farPrice[Side.SELL][farSorted[Side.SELL][0]]);
     }
 
     @Override
     public boolean isCrossed() {
-        return bestBidIdx != EMPTY && bestAskIdx != EMPTY && bestBidIdx >= bestAskIdx;
+        long bid = bestBid();
+        long ask = bestAsk();
+        return bid != NO_BID && ask != NO_ASK && bid >= ask;
     }
 
     @Override
     public long bidQtyAt(long price) {
-        int idx = indexOf(price);
+        int idx = levelOf(Side.BUY, price);
         return idx == EMPTY ? 0 : levelQty[Side.BUY][idx];
     }
 
     @Override
     public long askQtyAt(long price) {
-        int idx = indexOf(price);
+        int idx = levelOf(Side.SELL, price);
         return idx == EMPTY ? 0 : levelQty[Side.SELL][idx];
     }
 
@@ -387,13 +533,26 @@ public final class OrderBook implements Book {
         checkSide(side);
         boolean bids = side == Side.BUY;
         int idx = bids ? bestBidIdx : bestAskIdx;
+        int[] sorted = farSorted[side];
+        int farEnd = farCount[side];
+        int f = bids ? farEnd - 1 : 0;              // next far level, best first
         int i = 0;
-        while (i < n && idx != EMPTY) {
-            prices[i] = toPrice(idx);
-            qtys[i] = levelQty[side][idx];
-            if (counts != null) counts[i] = levelCount[side][idx];
+        while (i < n) {
+            boolean haveFar = bids ? f >= 0 : f < farEnd;
+            if (idx == EMPTY && !haveFar) break;
+            int level;
+            if (haveFar && (idx == EMPTY
+                    || (bids ? farPrice[side][sorted[f]] > toPrice(idx) : farPrice[side][sorted[f]] < toPrice(idx)))) {
+                level = levels + sorted[f];
+                f += bids ? -1 : 1;
+            } else {
+                level = idx;
+                idx = bids ? occupied[side].prevSetBit(idx - 1) : occupied[side].nextSetBit(idx + 1);
+            }
+            prices[i] = priceAt(side, level);
+            qtys[i] = levelQty[side][level];
+            if (counts != null) counts[i] = levelCount[side][level];
             i++;
-            idx = bids ? occupied[side].prevSetBit(idx - 1) : occupied[side].nextSetBit(idx + 1);
         }
         return i;
     }
@@ -401,7 +560,7 @@ public final class OrderBook implements Book {
     @Override
     public long[] queueAt(byte side, long price) {
         checkSide(side);
-        int idx = indexOf(price);
+        int idx = levelOf(side, price);
         if (idx == EMPTY) return new long[0];
 
         long[] ids = new long[levelCount[side][idx]];
@@ -430,7 +589,7 @@ public final class OrderBook implements Book {
     /** Price of a resting order, or -1 if it isn't in the book. */
     public long priceOf(long id) {
         int slot = idToSlot.get(id);
-        return slot == LongIntMap.NOT_FOUND ? -1 : toPrice(pool.levelIdx[slot]);
+        return slot == LongIntMap.NOT_FOUND ? -1 : priceAt(pool.side[slot], pool.levelIdx[slot]);
     }
 
     /** Side of a resting order, or -1 if it isn't in the book. */
@@ -439,10 +598,12 @@ public final class OrderBook implements Book {
         return slot == LongIntMap.NOT_FOUND ? -1 : pool.side[slot];
     }
 
+    /** Lowest price on the ladder. Far levels may hold lower prices. */
     public long minPrice() {
         return basePrice;
     }
 
+    /** Highest price on the ladder. Far levels may hold higher prices. */
     public long maxPrice() {
         return toPrice(levels - 1);
     }
@@ -453,5 +614,15 @@ public final class OrderBook implements Book {
 
     public int poolCapacity() {
         return pool.capacity();
+    }
+
+    /** Most far price levels one side can hold; 0 if the book has none. */
+    public int farCapacity() {
+        return farCapacity;
+    }
+
+    /** Far price levels currently in use on one side. */
+    public int farLevelCount(byte side) {
+        return farCount[checkSide(side)];
     }
 }

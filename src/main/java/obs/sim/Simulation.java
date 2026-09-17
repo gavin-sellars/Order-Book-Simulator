@@ -97,7 +97,16 @@ public final class Simulation implements MessageHandler, StrategyContext {
 
     /** @param poolCapacity most historical orders resting at once; the book fails loudly beyond it */
     public Simulation(long minPrice, long tickSize, int levels, int poolCapacity, Strategy strategy, Config config) {
-        this.book = new OrderBook(minPrice, tickSize, levels, poolCapacity, TradeListener.NONE);
+        this(new OrderBook(minPrice, tickSize, levels, poolCapacity, TradeListener.NONE), strategy, config);
+    }
+
+    /**
+     * A simulation on a book built elsewhere, such as one sized for a real stock with far levels
+     * ({@link obs.feed.StockProfile#newBook}). The book must be empty, and its listener is not used.
+     */
+    public Simulation(OrderBook book, Strategy strategy, Config config) {
+        if (book.orderCount() != 0) throw new IllegalArgumentException("the book must start empty");
+        this.book = book;
         this.builder = new BookBuilder(book);
         this.orders = new SimulatedOrders(book, this::exchangeFill);
         this.strategy = Objects.requireNonNull(strategy, "strategy");

@@ -149,3 +149,39 @@ tasks.register<JavaExec>("epsilonSmoke") {
     jvmArgs("-XX:+UnlockExperimentalVMOptions", "-XX:+UseEpsilonGC", "-Xms512m", "-Xmx512m", "-XX:+AlwaysPreTouch")
     args(splitArgs("epsilonArgs"))
 }
+
+tasks.register<JavaExec>("itchSurvey") {
+    group = "application"
+    description = "Surveys a whole ITCH day, every stock: message counts, price ranges, most orders resting. -PsurveyArgs=\"<file> [top]\"."
+    classpath = sourceSets["main"].runtimeClasspath
+    mainClass = "obs.app.ItchSurveyMain"
+    jvmArgs("-Xms3g", "-Xmx3g")
+    args(splitArgs("surveyArgs"))
+}
+
+tasks.register<JavaExec>("itchExtract") {
+    group = "application"
+    description = "Cuts per-stock files out of a whole ITCH day. -PextractArgs=\"<day file> <out dir> TICKER...\"."
+    classpath = sourceSets["main"].runtimeClasspath
+    mainClass = "obs.app.ItchExtractMain"
+    jvmArgs("-Xmx512m")
+    args(splitArgs("extractArgs"))
+}
+
+tasks.register<JavaExec>("fullDayReplay") {
+    group = "benchmark"
+    description = "Replays a whole real ITCH day into one fast book per stock. -PdayArgs=\"<file> [runs] [chunk MB] [latency]\"."
+    classpath = sourceSets["main"].runtimeClasspath
+    mainClass = "obs.app.FullDayReplayMain"
+    jvmArgs("-Xms10g", "-Xmx10g", "-XX:+AlwaysPreTouch")
+    args(splitArgs("dayArgs"))
+}
+
+tasks.register<JavaExec>("realCheck") {
+    group = "verification"
+    description = "Replays real ITCH data into the fast and reference books and checks they agree. -PcheckArgs=\"<file or dir> TICKER...\"."
+    classpath = sourceSets["main"].runtimeClasspath
+    mainClass = "obs.app.RealDataCheckMain"
+    jvmArgs("-Xms4g", "-Xmx4g", "-ea")
+    args(splitArgs("checkArgs"))
+}

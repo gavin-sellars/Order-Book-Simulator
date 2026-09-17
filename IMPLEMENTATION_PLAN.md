@@ -3,6 +3,8 @@
 Based on `order-book-guide.md`. The goal is one instrument on one venue: a correct L3 order book with zero allocation, tested against a reference, benchmarked, fed by **synthetic order flow encoded as Nasdaq ITCH 5.0 binary messages**, with a latency-aware simulation layer and a sample market maker.
 
 > **Scope (revised 2026-09-14):** Real ITCH files and LOBSTER data are out of scope for now. A Hawkes-driven generator runs its own matching engine and writes a byte-accurate ITCH 5.0 stream. Everything downstream (reader, book builder, simulator, benchmarks) consumes that stream exactly as it would a real Nasdaq file, so adding real data later only means pointing the reader at a different file.
+>
+> **Scope (revised 2026-09-17):** Real ITCH is in (M8). A full Nasdaq TotalView-ITCH 5.0 day (12 December 2025, 29.4 GB) is replayed. It was not quite "a different file": real books hold stub quotes from $0.0001 to $199,999, which the fixed ladder couldn't hold, so the book gained far levels. LOBSTER stays out of scope.
 
 ---
 
@@ -185,8 +187,14 @@ Every milestone ends in a working, committed state with passing tests. Rough eff
   - Charts copied to `docs/images`.
   - `.github/workflows/build.yml` runs `gradlew build jmhClasses` on JDK 25. Written but not run: there is no GitHub remote yet.
   - Determinism is covered by `SimulationDeterminismTest` in the normal build rather than a separate CI step.
+- [x] **M8** (2026-09-17): real Nasdaq data.
+  - `ItchFile` maps a file of any size as a `MemorySegment` and walks every stock; `ItchSurveyMain` surveys a day; `ItchExtractor` cuts per-stock files that the existing `ItchReader` and replay tools read unchanged.
+  - The survey found every busy stock with orders from $0.0001 to $199,999. `OrderBook` now has **far levels**: in book-builder mode an order off the ladder (or between two of its levels) rests on a small per-side array of levels sorted by price, using the same pool links. The default of zero far levels keeps the old behaviour, so every earlier test and benchmark is unchanged in meaning. A third differential property runs 1,000 sessions on a ten-level ladder where most orders are far.
+  - `StockProfile` sizes a book from the data in two untimed passes: a ladder window from 20% below the lowest trade to 25% above the highest, a pool of twice the most resting orders, and far levels for twice the most any side used.
+  - `RealDataCheckMain` replays seven busy stocks into the fast and reference books side by side; `FullDayReplayMain` replays the whole day into one book per stock, reading 1 GB chunks and timing only the processing.
+  - Bug found by the new tests: the extractor dropped system events that came before a stock's directory entry.
 - **Not done / next:**
-  - Real ITCH files (`MemorySegment` reader, gunzip, locate lookup already works).
+  - Gzipped day files (the reader expects the file unpacked).
   - LOBSTER golden-file validation.
   - Live synthetic simulation mode.
   - Packing hot order fields and sizing the id map to the working set.

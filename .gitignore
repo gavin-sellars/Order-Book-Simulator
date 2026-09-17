@@ -16,3 +16,6 @@ out/
 data/
 *.itch
 *.snap
+
+# Real Nasdaq ITCH days (about 30 GB each), as downloaded: S121225-v50.txt and similar
+S[0-9]*-v50*
