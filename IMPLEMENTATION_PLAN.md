@@ -193,6 +193,7 @@ Every milestone ends in a working, committed state with passing tests. Rough eff
   - `StockProfile` sizes a book from the data in two untimed passes: a ladder window from 20% below the lowest trade to 25% above the highest, a pool of twice the most resting orders, and far levels for twice the most any side used.
   - `RealDataCheckMain` replays seven busy stocks into the fast and reference books side by side; `FullDayReplayMain` replays the whole day into one book per stock, reading 1 GB chunks and timing only the processing.
   - Bug found by the new tests: the extractor dropped system events that came before a stock's directory entry.
+  - Regression found by an A/B against the previous commit (6 JMH forks each): the first far-level version checked for far levels on every step of the matching loop and slowed matching by about 10%. `match()` now checks once and otherwise runs the original loop; the remaining cost is 3–5% on matching micro-benchmarks and nothing measurable on replay.
 - **Not done / next:**
   - Gzipped day files (the reader expects the file unpacked).
   - LOBSTER golden-file validation.

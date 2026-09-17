@@ -182,8 +182,14 @@ public final class OrderBook implements Book {
         return OrderResult.ACCEPTED;
     }
 
-    /** Crosses against the opposite side. Returns the unfilled quantity. */
+    /**
+     * Crosses against the opposite side. Returns the unfilled quantity. Matching only removes
+     * resting orders, so if that side has no far levels now it won't gain any during the call, and
+     * the ladder-only loop is enough.
+     */
     private int match(long aggressorId, byte side, int limitIdx, long limitPrice, int qty) {
+        if (farCount[Side.opposite(side)] != 0) return matchWithFarLevels(aggressorId, side, limitPrice, qty);
+
         boolean buying = side == Side.BUY;
         byte restingSide = Side.opposite(side);
         int[] head = levelHead[restingSide];
@@ -191,18 +197,39 @@ public final class OrderBook implements Book {
 
         while (qty > 0) {
             int best = buying ? bestAskIdx : bestBidIdx;
-            if (farCount[restingSide] != 0) {
-                // Far levels in play: compare prices, since far indexes aren't in price order.
-                best = bestLevel(restingSide, best);
-                if (best == EMPTY) break;
-                long bestPrice = priceAt(restingSide, best);
-                if (buying ? bestPrice > limitPrice : bestPrice < limitPrice) break;
-            } else if (best == EMPTY || (buying ? best > limitIdx : best < limitIdx)) {
-                // A buyer crosses when the best ask is at or below their limit; a seller the reverse.
-                break;
-            }
+            // A buyer crosses when the best ask is at or below their limit; a seller the reverse.
+            if (best == EMPTY || (buying ? best > limitIdx : best < limitIdx)) break;
 
+            long price = toPrice(best);
+            do {
+                int slot = head[best];                  // FIFO: oldest order first
+                int fill = Math.min(qty, pool.qty[slot]);
+                long restingId = pool.id[slot];
+
+                qty -= fill;
+                pool.qty[slot] -= fill;
+                lvQty[best] -= fill;
+                if (pool.qty[slot] == 0) removeOrder(slot);     // moves the touch if the level empties
+
+                listener.onTrade(aggressorId, restingId, price, fill, side);
+            } while (qty > 0 && head[best] != EMPTY);
+        }
+        return qty;
+    }
+
+    /** As {@link #match}, when the resting side has far levels: compares prices, since far indexes aren't in price order. */
+    private int matchWithFarLevels(long aggressorId, byte side, long limitPrice, int qty) {
+        boolean buying = side == Side.BUY;
+        byte restingSide = Side.opposite(side);
+        int[] head = levelHead[restingSide];
+        long[] lvQty = levelQty[restingSide];
+
+        while (qty > 0) {
+            int best = bestLevel(restingSide, buying ? bestAskIdx : bestBidIdx);
+            if (best == EMPTY) break;
             long price = priceAt(restingSide, best);
+            if (buying ? price > limitPrice : price < limitPrice) break;
+
             do {
                 int slot = head[best];                  // FIFO: oldest order first
                 int fill = Math.min(qty, pool.qty[slot]);
