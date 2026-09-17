@@ -364,6 +364,8 @@ NVDA in full:
 
 ![NVDA P&L and fill rate vs latency](images/pnl_vs_latency_nvda.png)
 
+![SPY P&L and fill rate vs latency](images/pnl_vs_latency_spy.png)
+
 What it shows:
 - **Latency costs far more on real flow.** On NVDA the loss grows 20× from zero latency to 10 ms, and on SPY 12× to 1 ms, against 2.5× across the whole synthetic range. Real books change far more often than the synthetic one, so a slower maker's quote is stale more often when it is hit.
 - **Slower makers get filled more, and that is bad news.** The share of orders filled rises with latency on every stock: the extra fills are stale quotes being picked off. At 0 latency the maker cancels those quotes before the move reaches it.
