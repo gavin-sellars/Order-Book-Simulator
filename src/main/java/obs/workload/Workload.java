@@ -6,6 +6,7 @@ import obs.core.OrderResult;
 import obs.core.Prices;
 import obs.core.Side;
 import obs.core.TradeListener;
+import obs.ref.RefLinkedOrderBook;
 import obs.ref.RefOrderBook;
 
 /**
@@ -22,7 +23,14 @@ public final class Workload {
     public static final long MID = Prices.parse("150.00");
     public static final long BASE_PRICE = Prices.parse("100.00");
     public static final int LEVELS = 20_000;
-    public static final int POOL_CAPACITY = 1 << 20;
+
+    /**
+     * Fast book pool, and so id map, size. The tape never has more than 5,000 orders resting and
+     * OrderBookBenchmark adds 1,000 more, so this leaves over 2x headroom while keeping the id map
+     * (32,768 slots, 393 KB) inside the CPU cache. A 1,048,576-order pool makes the map 24 MB,
+     * bigger than the L3 cache, and the fast book then loses to a TreeMap book (docs/BENCHMARKS.md).
+     */
+    public static final int POOL_CAPACITY = 1 << 14;
 
     public static final int PREFILL_LEVELS = 50;
     public static final int PREFILL_ORDERS_PER_LEVEL = 10;
@@ -46,16 +54,17 @@ public final class Workload {
         return new RefOrderBook(Prices.CENT, listener);
     }
 
-    /** "fast" or "ref". */
+    /** "fast", "ref" or "refLinked". */
     public static Book newBook(String impl, TradeListener listener) {
         return newBook(impl, listener, POOL_CAPACITY);
     }
 
-    /** "fast" or "ref"; poolCapacity only applies to the fast book, which has a fixed pool. */
+    /** "fast", "ref" or "refLinked"; poolCapacity only applies to the fast book, which has a fixed pool. */
     public static Book newBook(String impl, TradeListener listener, int poolCapacity) {
         return switch (impl) {
             case "fast" -> newFastBook(listener, poolCapacity);
             case "ref" -> newRefBook(listener);
+            case "refLinked" -> new RefLinkedOrderBook(Prices.CENT, listener);
             default -> throw new IllegalArgumentException("unknown book implementation: " + impl);
         };
     }

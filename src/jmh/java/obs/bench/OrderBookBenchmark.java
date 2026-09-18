@@ -33,7 +33,7 @@ import java.util.concurrent.TimeUnit;
 @OutputTimeUnit(TimeUnit.NANOSECONDS)
 @Warmup(iterations = 5, time = 1)
 @Measurement(iterations = 10, time = 1)
-@Fork(value = 2, jvmArgsAppend = {"-Xms2g", "-Xmx2g", "-XX:+AlwaysPreTouch"})
+@Fork(value = 3, jvmArgsAppend = {"-Xms2g", "-Xmx2g", "-XX:+AlwaysPreTouch"})
 public class OrderBookBenchmark {
 
     private static final long CENT = Prices.CENT;
@@ -42,11 +42,11 @@ public class OrderBookBenchmark {
     private static final long DEEP_FIRST_ID = 500_000L;
     private static final int LEVEL_QTY = Workload.PREFILL_ORDERS_PER_LEVEL * Workload.PREFILL_QTY;
 
-    @Param({"fast", "ref"})
+    @Param({"fast", "ref", "refLinked"})
     public String impl;
 
-    /** Fast book only: the pool, and so the id map, are sized for this many resting orders. */
-    @Param({"1048576"})
+    /** Fast book only: the pool, and so the id map, are sized for this many resting orders. Workload.POOL_CAPACITY by default. */
+    @Param({"16384"})
     public int poolCapacity;
 
     private Book book;

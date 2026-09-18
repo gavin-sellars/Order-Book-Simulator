@@ -7,6 +7,7 @@ import net.jqwik.api.ForAll;
 import net.jqwik.api.Property;
 import net.jqwik.api.Provide;
 import net.jqwik.api.Tuple;
+import obs.ref.RefLinkedOrderBook;
 import obs.ref.RefOrderBook;
 import obs.testutil.TradeRecorder;
 
@@ -28,6 +29,10 @@ class DifferentialProperties {
     private static final long BASE = Prices.parse("149.00");
     private static final int LEVELS = 200;                   // $149.00 to $150.99
     private static final int POOL = 4096;
+
+    private static final long WINDOW_BASE = Prices.parse("149.95");
+    private static final int WINDOW_LEVELS = 10;             // $149.95 to $150.04
+    private static final long HALF_CENT = Prices.CENT / 2;
 
     /** idPick meaning "a brand-new id". Any other value picks a recently issued id, which may be dead. */
     private static final int FRESH = -1;
@@ -55,11 +60,34 @@ class DifferentialProperties {
         runSession(ops, touchSearch, true);
     }
 
-    private static void runSession(List<Op> ops, OrderBook.TouchSearch touchSearch, boolean allowCrossed) {
-        TradeRecorder refTrades = new TradeRecorder();
+    /**
+     * A ten-level ladder ($149.95 to $150.04) with half-cent prices allowed, so most resting orders
+     * land on far levels: below or above the ladder, between two of its levels, or at the extremes of
+     * the ITCH price range. Limit orders stay on the ladder, as matching mode requires, and trade
+     * against far orders too.
+     */
+    @Property(tries = 1000)
+    void farLevelSessionsAgreeWithReference(@ForAll("farSessions") List<Op> ops,
+                                            @ForAll OrderBook.TouchSearch touchSearch) {
         TradeRecorder fastTrades = new TradeRecorder();
-        RefOrderBook ref = new RefOrderBook(Prices.CENT, refTrades);
+        OrderBook fast = new OrderBook(WINDOW_BASE, Prices.CENT, WINDOW_LEVELS, POOL, fastTrades, touchSearch,
+                HALF_CENT, 64);
+        runSession(ops, fast, fastTrades, HALF_CENT, true);
+    }
+
+    private static void runSession(List<Op> ops, OrderBook.TouchSearch touchSearch, boolean allowCrossed) {
+        TradeRecorder fastTrades = new TradeRecorder();
         OrderBook fast = new OrderBook(BASE, Prices.CENT, LEVELS, POOL, fastTrades, touchSearch);
+        runSession(ops, fast, fastTrades, Prices.CENT, allowCrossed);
+    }
+
+    /** The linked-list variant of the reference book, used to measure the O(1) cancel on its own, is held to the same standard. */
+    private static void runSession(List<Op> ops, OrderBook fast, TradeRecorder fastTrades, long refTick,
+                                   boolean allowCrossed) {
+        TradeRecorder refTrades = new TradeRecorder();
+        TradeRecorder linkedTrades = new TradeRecorder();
+        RefOrderBook ref = new RefOrderBook(refTick, refTrades);
+        RefLinkedOrderBook linked = new RefLinkedOrderBook(refTick, linkedTrades);
         Ids ids = new Ids();
 
         for (int i = 0; i < ops.size(); i++) {
@@ -67,9 +95,14 @@ class DifferentialProperties {
             long[] resolved = ids.resolve(op);
             String step = "step " + i + " " + op + " ids=" + Arrays.toString(resolved);
 
-            assertEquals(apply(ref, op, resolved), apply(fast, op, resolved), step + ": result");
-            assertEquals(refTrades.drain(), fastTrades.drain(), step + ": trades");
+            int expected = apply(ref, op, resolved);
+            assertEquals(expected, apply(fast, op, resolved), step + ": result");
+            assertEquals(expected, apply(linked, op, resolved), step + ": linked result");
+            var expectedTrades = refTrades.drain();
+            assertEquals(expectedTrades, fastTrades.drain(), step + ": trades");
+            assertEquals(expectedTrades, linkedTrades.drain(), step + ": linked trades");
             assertSameBook(ref, fast, LEVELS, step);
+            assertSameBook(ref, linked, LEVELS, step + " (linked)");
             BookValidator.validate(fast, allowCrossed);
         }
     }
@@ -138,6 +171,37 @@ class DifferentialProperties {
                 Tuple.of(2, reduce()),
                 Tuple.of(3, execute()),
                 Tuple.of(2, replace())).list().ofMaxSize(300);
+    }
+
+    @Provide
+    Arbitrary<List<Op>> farSessions() {
+        Arbitrary<Op> windowLimit = Combinators.combine(side(), windowPrice(), qty(), newIdPick()).as(Limit::new);
+        Arbitrary<Op> farRest = Combinators.combine(side(), farPrice(), qty(), newIdPick()).as(Rest::new);
+        Arbitrary<Op> farReplace = Combinators.combine(existingPick(), newIdPick(), farPrice(), qty()).as(Replace::new);
+        return Arbitraries.frequencyOf(
+                Tuple.of(3, windowLimit),
+                Tuple.of(1, market()),
+                Tuple.of(6, farRest),
+                Tuple.of(4, cancel()),
+                Tuple.of(2, reduce()),
+                Tuple.of(3, execute()),
+                Tuple.of(3, farReplace)).list().ofMaxSize(300);
+    }
+
+    /** On the ten-level ladder. */
+    private static Arbitrary<Long> windowPrice() {
+        return Arbitraries.integers().between(0, WINDOW_LEVELS - 1).map(t -> WINDOW_BASE + t * Prices.CENT);
+    }
+
+    /**
+     * Anywhere within ten cents of $150.00 in half-cent steps, so on the ladder, off either end, or
+     * between two levels; now and then the ITCH extremes, and now and then invalid.
+     */
+    private static Arbitrary<Long> farPrice() {
+        return Arbitraries.frequencyOf(
+                Tuple.of(30, Arbitraries.integers().between(-20, 20).map(t -> MID + t * HALF_CENT)),
+                Tuple.of(2, Arbitraries.of(HALF_CENT, Prices.parse("199999.00"))),
+                Tuple.of(1, Arbitraries.of(0L, -HALF_CENT, MID + 1)));
     }
 
     private static Arbitrary<Op> limit() {

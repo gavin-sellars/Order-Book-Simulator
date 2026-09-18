@@ -1,6 +1,6 @@
 """Plots the latency sweep written by `gradlew latencySweep`.
 
-Usage: python tools/plot_pnl.py [build/reports/sim]
+Usage: python tools/plot_pnl.py [build/reports/sim] [title suffix, e.g. "NVDA, Nasdaq 12 Dec 2025"]
 Needs matplotlib. Writes pnl_vs_latency.png and pnl_timeseries.png next to the CSVs.
 """
 import csv
@@ -19,6 +19,7 @@ def label(ns: int) -> str:
 
 def main() -> None:
     directory = Path(sys.argv[1] if len(sys.argv) > 1 else "build/reports/sim")
+    suffix = f" ({sys.argv[2]})" if len(sys.argv) > 2 else ""
 
     with open(directory / "pnl_vs_latency.csv", newline="") as f:
         rows = list(csv.DictReader(f))
@@ -34,7 +35,7 @@ def main() -> None:
     right = left.twinx()
     right.plot(labels, fill_rate, color="#d0704a", marker="o")
     right.set_ylabel("orders filled (%)")
-    left.set_title("Sample market maker: P&L and fill rate vs latency")
+    left.set_title("Sample market maker: P&L and fill rate vs latency" + suffix)
     fig.tight_layout()
     fig.savefig(directory / "pnl_vs_latency.png", dpi=150)
 
@@ -51,7 +52,7 @@ def main() -> None:
     ax.axhline(0, color="black", linewidth=0.8)
     ax.set_xlabel("hours since the open")
     ax.set_ylabel("P&L, marked to mid ($)")
-    ax.set_title("Sample market maker: P&L through the session")
+    ax.set_title("Sample market maker: P&L through the session" + suffix)
     ax.legend(title="latency")
     fig.tight_layout()
     fig.savefig(directory / "pnl_timeseries.png", dpi=150)

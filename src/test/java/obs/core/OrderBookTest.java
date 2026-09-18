@@ -50,6 +50,57 @@ class OrderBookTest extends BookContractTest {
     }
 
     @Test
+    void farLevelsHoldStubQuotesAndSubPennyPricesOffTheLadder() {
+        fast = new OrderBook(BASE, Prices.CENT, LEVELS, 1024, TradeListener.NONE, touchSearch(), 1, 4);
+        long stubBid = px("0.0001");
+        long stubAsk = px("199999.00");
+        long between = px("150.0050");
+
+        assertEquals(ACCEPTED, fast.addRestingOrder(1, BUY, stubBid, 100));
+        assertEquals(ACCEPTED, fast.addRestingOrder(2, SELL, stubAsk, 100));
+        assertEquals(stubBid, fast.bestBid(), "a far bid is the touch when the ladder is empty");
+        assertEquals(stubAsk, fast.bestAsk());
+
+        assertEquals(ACCEPTED, fast.addRestingOrder(3, BUY, px("150.00"), 200));
+        assertEquals(ACCEPTED, fast.addRestingOrder(4, BUY, between, 300));
+        assertEquals(between, fast.bestBid(), "a far level between ladder levels still ranks by price");
+        assertEquals(REJECTED_PRICE, fast.addLimitOrder(5, SELL, between, 100), "matching mode stays on the ladder");
+
+        long[] prices = new long[4];
+        long[] qtys = new long[4];
+        assertEquals(3, fast.depth(BUY, 4, prices, qtys, null));
+        assertEquals(between, prices[0]);
+        assertEquals(px("150.00"), prices[1]);
+        assertEquals(stubBid, prices[2]);
+        assertEquals(300, fast.bidQtyAt(between));
+        assertEquals(between, fast.priceOf(4));
+        assertEquals(2, fast.farLevelCount(BUY));
+
+        // A market sell takes the far level first, then the ladder, then the stub.
+        assertEquals(ACCEPTED, fast.addMarketOrder(6, SELL, 550));
+        assertEquals(stubBid, fast.bestBid());
+        assertEquals(50, fast.restingQty(1));
+        assertEquals(1, fast.farLevelCount(BUY));
+
+        assertEquals(ACCEPTED, fast.replace(2, 7, px("0.50"), 100));
+        assertEquals(px("0.50"), fast.bestAsk());
+        assertFalse(fast.isCrossed());
+        assertTrue(fast.execute(7, 100));
+        assertEquals(Book.NO_ASK, fast.bestAsk());
+        assertEquals(0, fast.farLevelCount(SELL));
+        BookValidator.validate(fast, true);
+    }
+
+    @Test
+    void farLevelsFailLoudlyWhenFull() {
+        fast = new OrderBook(BASE, Prices.CENT, LEVELS, 1024, TradeListener.NONE, touchSearch(), Prices.CENT, 1);
+        assertEquals(ACCEPTED, fast.addRestingOrder(1, BUY, px("1.00"), 100));
+        assertEquals(ACCEPTED, fast.addRestingOrder(2, BUY, px("1.00"), 100), "same far price, same level");
+        assertThrows(IllegalStateException.class, () -> fast.addRestingOrder(3, BUY, px("2.00"), 100));
+        assertEquals(REJECTED_PRICE, fast.addRestingOrder(4, BUY, px("2.005"), 100), "still off the price tick");
+    }
+
+    @Test
     void ordersAtBothEndsOfTheLadderWork() {
         assertEquals(px("100.00"), fast.minPrice());
         assertEquals(px("199.99"), fast.maxPrice());

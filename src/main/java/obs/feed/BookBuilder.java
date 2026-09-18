@@ -17,6 +17,7 @@ public final class BookBuilder implements MessageHandler {
     private final Book book;
     private long orderMessages;
     private long rejectedMessages;
+    private long unknownRefMessages;
 
     public BookBuilder(Book book) {
         this.book = book;
@@ -29,22 +30,22 @@ public final class BookBuilder implements MessageHandler {
 
     @Override
     public void onExecute(long timestamp, long orderRef, int shares, long matchNumber, long price) {
-        applied(book.execute(orderRef, shares));
+        applied(book.execute(orderRef, shares), orderRef);
     }
 
     @Override
     public void onCancel(long timestamp, long orderRef, int shares) {
-        applied(book.reduce(orderRef, shares));
+        applied(book.reduce(orderRef, shares), orderRef);
     }
 
     @Override
     public void onDelete(long timestamp, long orderRef) {
-        applied(book.cancel(orderRef));
+        applied(book.cancel(orderRef), orderRef);
     }
 
     @Override
     public void onReplace(long timestamp, long oldRef, long newRef, int shares, long price) {
-        applied(book.replace(oldRef, newRef, price, shares) == OrderResult.ACCEPTED);
+        applied(book.replace(oldRef, newRef, price, shares) == OrderResult.ACCEPTED, oldRef);
     }
 
     /** Order messages seen: adds, executions, cancels, deletes and replaces. */
@@ -57,8 +58,23 @@ public final class BookBuilder implements MessageHandler {
         return rejectedMessages;
     }
 
+    /**
+     * Rejected executions, cancels, deletes and replaces that referred to an order the book doesn't
+     * hold. On a file replayed from the start of the day, anything above zero means the book has
+     * drifted from the exchange's.
+     */
+    public long unknownRefMessages() {
+        return unknownRefMessages;
+    }
+
     private void applied(boolean ok) {
         orderMessages++;
         if (!ok) rejectedMessages++;
+    }
+
+    /** As above; only a rejection pays for the extra lookup. */
+    private void applied(boolean ok, long orderRef) {
+        applied(ok);
+        if (!ok && !book.contains(orderRef)) unknownRefMessages++;
     }
 }

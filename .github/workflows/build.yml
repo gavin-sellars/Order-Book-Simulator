@@ -17,7 +17,7 @@ jobs:
       - name: Build and test
         run: |
           chmod +x gradlew
-          ./gradlew build jmhClasses --console=plain
+          ./gradlew build jacocoTestReport jmhClasses --console=plain
       - name: Upload test reports
         if: failure()
         uses: actions/upload-artifact@v4

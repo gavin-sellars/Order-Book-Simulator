@@ -102,7 +102,7 @@ class ItchReaderTest {
                 "system " + ItchLayout.MAX_TIMESTAMP + " C"), read(bytes.toByteArray()));
     }
 
-    private static final class Recorder implements MessageHandler {
+    static final class Recorder implements MessageHandler {
         final List<String> events = new ArrayList<>();
 
         @Override
